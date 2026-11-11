@@ -1,12 +1,14 @@
 import numpy as np
-impoty pytest
+import pytest
 
-from .triplet_coevolution.src.triplet_coevolution.alphabets import (
+from src.triplet_coevolution.alphabets import (
   encode_sequence,
   MoleculeType,
   CANONICAL,
+  UNKNOWN_CODE
 )
 
+# canonical encoding
 @pytest.mark.parametrize("molecule", list(MoleculeType))
 def test_canonical_alphabet(molecule):
   sequence = CANONICAL[molecule]
@@ -16,42 +18,132 @@ def test_canonical_alphabet(molecule):
   np.testing.assert_array_equal(result, expected)
 
 
-@pytest.mark.parametrize("molecule", list(MoleculeType))
-def test_gaps(molecule):
+# alphabet size
+@pytest.mark.parametrize(
+  "molecule,expected_size",
+  [
+    (MoleculeType.PROTEIN, 20),
+    (MoleculeType.DNA, 4),
+    (MoleculeType.RNA, 4),
+  ],
+)
+def test_alphabet_size(molecule, expected_size):
+  assert len(CANONICAL[molecule]) == expected_size
+
+
+# gaps and missing chars
+@pytest.mark.parametrize(
+  "molecule,gap_code",
+  [
+    (MoleculeType.PROTEIN, 20),
+    (MoleculeType.DNA, 4),
+    (MoleculeType.RNA, 4),
+  ],
+)
+def test_gaps(molecule, gap_code):
   result = encode_sequence("A-.?C", molecule)
-  np.testing.assert_array_equal(result, [0, 20, 20, -1, 1] if molecule == MoleculeType.PROTEIN else 3])
 
-def test_protein_ambiguity(molecule):
-  result = encode_sequence("BJOUXZ", "protein")
-  np.testing.asser_array_equal(result, [-1] * 6)
+  expected = [0, gap_code, gap_code, -1, 1]
+  np.testing.assert_array_equal(result, expected)
 
 
-@pytest.mark.parametrize("molecule", ["dna", "rna"])
+# ambiguous protein 
+def test_protein_ambiguity():
+  result = encode_sequence("BJOUXZ", MoleculeType.PROTEIN)
+  
+  np.testing.assert_array_equal(
+    result, [UNKNOWN_CODE] * 6
+  )
+
+
+# ambiguous nucleotide
+@pytest.mark.parametrize("molecule", [
+  MoleculeType.DNA,
+  MoleculeType.RNA,
+])
 def test_nucleotide_ambiguity(molecule):
   result = encode_sequence("BDHKMNRSVWY", molecule)
-  np.testing.assert_array_equal(result, [-1] * 11)
+  
+  np.testing.assert_array_equal(
+    result, [UNKNOWN_CODE] * 11
+  )
 
-def test_lowercase():
-  result = encode_sequence("acdefg", molecule)
-  np.testing.assert_array_equal(result, [0, 1, 2, 3, 4, 5])
 
+# lowercase
+@pytest.mark.parametrize("molecule", list(MoleculeType))
+def test_lowercase(molecule):
+  sequence = CANONICAL[molecule].lower()
+  result = encode_sequence(sequence, molecule)
+
+  expected = np.arange(len(sequence), dtype=np.int16)
+  np.testing.assert_array_equal(result, expected)
+
+
+# empty sequence
 def test_empty_sequence():
   with pytest.raises(ValueError, match="empty"):
-    encode_sequence("", "protein")
+    encode_sequence("", MoleculeType.PROTEIN)
 
+
+# invalid characters
 def test_invalid_symbol():
   with pytest.raises(ValueError, match="invalid symbol"):
     encode_sequence("AC1DE", "protein")
 
+
+# invalid molecule type
 def test_invalid_molecule():
   with pytest.raises(ValueError):
     encode_sequence("ACDE", "carbohydrate")
 
-def test_output_dtype():
-  result = encode_sequence("ACDE", "protein")
-  asser result.dtype == np.int16
 
+# output data type
+def test_output_dtype():
+  result = encode_sequence("ACDE", MoleculeType.PROTEIN)
+
+  assert isinstance(result, np.ndarray)
+  assert result.dtype == np.int16
+
+
+# output length
 def test_output_length():
   sequence = "ACD--EFG"
-  result = encode_sequence(sequence, "protein")
+  result = encode_sequence(sequence, MoleculeType.PROTEIN)
+  
   assert len(result) == len(sequence)
+
+
+# rna should reject T
+def test_rna_rejects_thymine():
+  with pytest.raises(ValueError, match="invalid symbol"):
+    encode_sequence("ACGT" MoleculeType.RNA)
+
+
+# dna should reject U
+def test_dna_rejects_uracil():
+  with pytest.raises(ValueError, match="invalid symbol"):
+    encode_sequence("ACGU" MoleculeType.DNA)
+
+
+# string molecule args
+def test_string_molecule_argument():
+  result = encode_sequence("ACGU", "rna")
+
+  np.testing.assert_array_equal(result, [0, 1, 2, 3])
+
+
+# missing and gaps are not the same
+@pytest.mark.parametrize(
+  "molecule,gap_code",
+  [
+    (MoleculeType.PROTEIN, 20),
+    (MoleculeType.DNA, 4),
+    (MoleculeType.RNA, 5),
+  ],
+)
+def test_missing_vs_gap(molecule, gap_code):
+  result = encode_sequence("A-?C", molecule)
+
+  assert result[1] == gap_code
+  assert result[2] == UNKNOWN_CODE
+  assert result[1] != result[2]
