@@ -20,7 +20,9 @@ AMBIGUOUS = {
   MoleculeType.RNA: "BDHKMNRSVWY",
 }
 
-MISSING = set("-.?")
+GAPS = set("-.")
+MISSING = set("?")
+UNKNOWN_CODE = -1
 
 def encode_sequence(
   sequence: str,
@@ -28,8 +30,8 @@ def encode_sequence(
 ) -> np.ndarray:
   """encode sequence as integers
   canoncial = nonnegative
-  gaps/ambiguous = -1
-  invalid gives ValueError"""
+  gaps = 4 for dna/rna, 20 for protein
+  ambiguous/missing = -1"""
   molecule = MoleculeType(molecule)
 
   if not sequence:
@@ -40,13 +42,20 @@ def encode_sequence(
     for i, letter in enumerate(CANONICAL[molecule])
   }
 
+  gap_code = len(alphabet)
+
   result = np.empty(len(sequence), dtype=np.int16)
 
   for i, symbol in enumerate(sequence.upper()):
     if symbol in alphabet:
       result[i] = alphabet[symbol]
+
+    elif symbol in GAPS:
+      result[i] = gap_code
+    
     elif symbol in AMBIGUOUS[molecule] or symbol in MISSING:
-      result[i] = -1
+      result[i] = UNKNOWN_CODE
+    
     else:
       raise ValueError(
         f"invalid symbol {symbol!r} at pos {i + 1} for {molecule.value}"
