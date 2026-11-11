@@ -148,7 +148,7 @@ class ComponentMSA:
 class TripletMatch:
   """1 verified correspondence between a b c homs"""
 
-  observation_ids: str
+  observation_id: str
   a_id: str
   b_id: str
   c_id: str
@@ -177,7 +177,7 @@ class MatchedTripletMSA:
 
     if not matches or any(
       not isinstance(m, TripletMatch)
-      for m in mathces
+      for m in matches
     ):
       raise ValueError(
         "at least one valid TripletMatch is required"
