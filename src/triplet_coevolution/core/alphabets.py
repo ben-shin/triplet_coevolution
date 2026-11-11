@@ -10,14 +10,14 @@ class MoleculeType(str, Enum):
 
 CANONICAL = {
   MoleculeType.PROTEIN: "ACDEFGHIKLMNPQRSTVWY",
-  MoleculeType.DNA: "ATGC",
-  MoleculeType.RNA: "AUGC",
+  MoleculeType.DNA: "ACGT",
+  MoleculeType.RNA: "ACGU",
 }
 
 AMBIGUOUS = {
-  MoleculeType.PROTEIN: "BZJXUO",
-  MoleculeType.DNA: "YRSWMKVHDB",
-  MoleculeType.RNA: "YRSWMKVHDB",
+  MoleculeType.PROTEIN: "BJOUXZ",
+  MoleculeType.DNA: "BDHKMNRSVWY",
+  MoleculeType.RNA: "BDHKMNRSVWY",
 }
 
 MISSING = set("-.?")
