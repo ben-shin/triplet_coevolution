@@ -8,6 +8,8 @@ class MoleculeType(str, Enum):
   DNA = "dna"
   RNA = "rna"
 
+# note: protein will have 21 states, dna and rna will have 5 states. gaps and missing will not have a state.
+
 CANONICAL = {
   MoleculeType.PROTEIN: "ACDEFGHIKLMNPQRSTVWY",
   MoleculeType.DNA: "ACGT",
