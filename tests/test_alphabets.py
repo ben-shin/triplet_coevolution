@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.triplet_coevolution.alphabets import (
+from triplet_coevolution.alphabets import (
   encode_sequence,
   MoleculeType,
   CANONICAL,
