@@ -50,5 +50,6 @@ def encode_sequence(
     else:
       raise ValueError(
         f"invalid symbol {symbol!r} at pos {i + 1} for {molecule.value}"
+      )
 
   return result
