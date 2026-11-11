@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from triplet_coevolution.alphabets import (
+from triplet_coevolution.core.alphabets import (
   encode_sequence,
   MoleculeType,
   CANONICAL,
@@ -116,13 +116,13 @@ def test_output_length():
 # rna should reject T
 def test_rna_rejects_thymine():
   with pytest.raises(ValueError, match="invalid symbol"):
-    encode_sequence("ACGT" MoleculeType.RNA)
+    encode_sequence("ACGT", MoleculeType.RNA)
 
 
 # dna should reject U
 def test_dna_rejects_uracil():
   with pytest.raises(ValueError, match="invalid symbol"):
-    encode_sequence("ACGU" MoleculeType.DNA)
+    encode_sequence("ACGU", MoleculeType.DNA)
 
 
 # string molecule args
@@ -138,7 +138,7 @@ def test_string_molecule_argument():
   [
     (MoleculeType.PROTEIN, 20),
     (MoleculeType.DNA, 4),
-    (MoleculeType.RNA, 5),
+    (MoleculeType.RNA, 4),
   ],
 )
 def test_missing_vs_gap(molecule, gap_code):
