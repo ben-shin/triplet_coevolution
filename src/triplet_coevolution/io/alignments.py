@@ -9,15 +9,15 @@ from triplet_coevolution.core.alphabets import MoleculeType
 
 # extensions you can recognize. add more later if necessary
 FILE_FORMATS = {
-  ".fa" = "fasta",
-  ".fas" = "fasta",
-  ".fasta" = "fasta",
-  ".faa" = "fasta",
-  ".fna" = "fasta",
-  ".ffn" = "fasta",
-  ".sto" = "stockholm",
-  ".sth" = "stockholm",
-  ".stockholm" = "stockholm",
+  ".fa": "fasta",
+  ".fas": "fasta",
+  ".fasta": "fasta",
+  ".faa": "fasta",
+  ".fna": "fasta",
+  ".ffn": "fasta",
+  ".sto": "stockholm",
+  ".sth": "stockholm",
+  ".stockholm": "stockholm",
 }
 
 
