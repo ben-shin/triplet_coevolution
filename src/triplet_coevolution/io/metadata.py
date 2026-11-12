@@ -50,7 +50,7 @@ def _validate_matches(matches: tuple[TripletMatch, ...]) -> None:
 
       if value != value.strip():
         raise ValueError(
-          f"row {row_number} has an empty {field}"
+          f"row {row_number} has surrounding spaces in {field}"
         )
 
       if value in seen:
@@ -109,9 +109,9 @@ class TripletTable:
           f"nonstring metadata at row {row_number}"
         )
 
-  object.__setattr__(self, "matches", matches)
-  object.__setattr__(self, "extra_columns", extra_columns)
-  object.__setattr__(self, "annotations", annotations)
+    object.__setattr__(self, "matches", matches)
+    object.__setattr__(self, "extra_columns", extra_columns)
+    object.__setattr__(self, "annotations", annotations)
 
 @property
 def n_observations(self) -> int:
@@ -132,7 +132,7 @@ def read_triplet_table(
 
   # check input file
   if not path.is_file():
-    raise FilenotFoundError(
+    raise FileNotFoundError(
       f"triplet table not found: {path}"
     )
 
