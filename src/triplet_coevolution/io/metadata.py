@@ -90,7 +90,7 @@ class TripletTable:
     if not annotations:
       annotations = tuple({} for _ in matches)
 
-    if len(annotations) != len (matches):
+    if len(annotations) != len(matches):
       raise ValueError(
         "annotations must match number of observations"
       )
@@ -102,7 +102,7 @@ class TripletTable:
         )
 
       if any(
-        not isinstance(value,str)
+        not isinstance(value, str)
         for value in annotation.values()
       ):
         raise ValueError(
@@ -113,10 +113,10 @@ class TripletTable:
     object.__setattr__(self, "extra_columns", extra_columns)
     object.__setattr__(self, "annotations", annotations)
 
-@property
-def n_observations(self) -> int:
-  """number of matched evolutionary observations"""
-  return len(self.matches)
+  @property
+  def n_observations(self) -> int:
+    """number of matched evolutionary observations"""
+    return len(self.matches)
 
 
 def read_triplet_table(
