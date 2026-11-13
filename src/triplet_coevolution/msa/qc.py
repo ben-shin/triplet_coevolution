@@ -57,7 +57,7 @@ class TripletQC:
     @property
     def n_sites(self) -> int:
         """total number of aln pos across a b c"""
-        return self.a_n_sites + self.b_n_sites + self.c_n_sites
+        return self.a.n_sites + self.b.n_sites + self.c.n_sites
 
 def component_qc(msa: ComponentMSA) -> ComponentQC:
     """calculate unweighted qc stats for each aln col
