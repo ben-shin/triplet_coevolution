@@ -1,8 +1,6 @@
 # qc metrics for single and matched triplet msas
 
 from dataclasses import dataclass
-from re import T
-from turtle import st
 
 import numpy as np
 
@@ -109,8 +107,53 @@ def component_qc(msa: ComponentMSA) -> ComponentQC:
         where=probabilities > 0,
     )
 
-    entropy_bits = -(probabilities * log_probabilites).sum(axis=0)
+    entropy_bits = -(probabilities * log_probabilities).sum(axis=0)
     entropy_bits[n_canonical == 0] = np.nan
 
     #fraction of canon obs carrying most freq state
     conservation = np.full(n_sites, np.nan, dtype=np.float64)
+    np.divide(
+        counts.max(axis=0),
+        n_canonical,
+        out=conservation,
+        where=n_canonical > 0,
+    )
+
+    # prevent cached qc result arrays being overwritten
+    for array in(
+        n_canonical,
+        gap_fraction,
+        missing_fraction,
+        coverage,
+        entropy_bits,
+        conservation,
+    ):
+        array.setflags(write=False)
+
+    return ComponentQC(
+        name=msa.name,
+        molecule=msa.molecule,
+        n_sequences=n_sequences,
+        n_sites=n_sites,
+        n_canonical=n_canonical,
+        gap_fraction=gap_fraction,
+        missing_fraction=missing_fraction,
+        coverage=coverage,
+        entropy_bits=entropy_bits,
+        conservation=conservation,
+    )
+
+def triplet_qc(msa: MatchedTripletMSA) -> TripletQC:
+    """calculate descriptive qc for all 3 matches msa comps"""
+
+    if not isinstance(msa, MatchedTripletMSA):
+        raise TypeError("triplet_qc expects a MatchedTripletMSA")
+
+    a, b, c = (component_qc(part) for part in msa.components)
+
+    return TripletQC(
+        a=a,
+        b=b,
+        c=c,
+        n_observations=msa.n_observations,
+    )
