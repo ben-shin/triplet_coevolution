@@ -21,7 +21,7 @@ def test_read_fasta(tmp_path):
   np.testing.assert_array_equal(msa.matrix[0], [0, 1, 2, 20])
   np.testing.assert_array_equal(msa.matrix[1], [0, 5, 2, -1])
 
-  
+
 # read stockholm rna aln
 def test_read_stockholm(tmp_path):
   path = tmp_path / "rna.sto"
@@ -34,7 +34,7 @@ def test_read_stockholm(tmp_path):
 
   msa = read_msa(path, "C", "rna")
 
-  assert msa.ids == ("x", "y")
+  assert msa.ids == ("c1", "c2")
   assert msa.n_sequences == 2
 
 # reject missing aln files
@@ -80,7 +80,7 @@ def test_bad_fasta_alignmetn(tmp_path, content):
 # rna alns should reject T
 def test_wrong_nucleotide(tmp_path):
   path = tmp_path / "rna.fa"
-  path.write_text("x>\nACGT\nAGGU\n")
+  path.write_text("x>\nACGT\ny>\nAGGU\n")
 
   with pytest.raises(ValueError, match="invalid seq"):
     read_msa(path, "C", "rna")
