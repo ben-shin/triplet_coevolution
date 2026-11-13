@@ -13,6 +13,7 @@ from triplet_coevolution.core.alignment import (
 )
 from triplet_coevolution.core.alphabets import MoleculeType
 
+
 # reusable example - 2 observations with protein, dna, rna components
 @pytest.fixture
 def components():
@@ -78,7 +79,7 @@ def test_normalize_input(molecule, sequence):
   assert a.ids == ("x",)
   assert a.sequences == ("AC-?",)
   assert a.molecule == MoleculeType(molecule)
-  
+
 
 # cached matrix shouldn't be modified
 def test_matrix_cached_and_read_only(components):
@@ -230,7 +231,7 @@ def test_all_molecule_combinations(molecules, matches):
 
   combined = MatchedTripletMSA(a, b, c, matches)
   assert combined.matrix.shape == (2, 6)
-  
+
 
 # input row order has to agree with explicit matching table
 @pytest.mark.parametrize("component_index", [0, 1, 2])

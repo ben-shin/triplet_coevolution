@@ -6,7 +6,6 @@ from pathlib import Path
 
 from triplet_coevolution.core.alignment import TripletMatch
 
-
 # required columns in matching table - CASE SENSITIVE
 REQUIRED_COLUMNS = ("observation_id", "a_id", "b_id", "c_id")
 

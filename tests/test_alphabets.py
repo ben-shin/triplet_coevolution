@@ -2,11 +2,12 @@ import numpy as np
 import pytest
 
 from triplet_coevolution.core.alphabets import (
-  encode_sequence,
-  MoleculeType,
   CANONICAL,
-  UNKNOWN_CODE
+  UNKNOWN_CODE,
+  MoleculeType,
+  encode_sequence,
 )
+
 
 # canonical encoding
 @pytest.mark.parametrize("molecule", list(MoleculeType))
@@ -47,10 +48,10 @@ def test_gaps(molecule, gap_code):
   np.testing.assert_array_equal(result, expected)
 
 
-# ambiguous protein 
+# ambiguous protein
 def test_protein_ambiguity():
   result = encode_sequence("BJOUXZ", MoleculeType.PROTEIN)
-  
+
   np.testing.assert_array_equal(
     result, [UNKNOWN_CODE] * 6
   )
@@ -63,7 +64,7 @@ def test_protein_ambiguity():
 ])
 def test_nucleotide_ambiguity(molecule):
   result = encode_sequence("BDHKMNRSVWY", molecule)
-  
+
   np.testing.assert_array_equal(
     result, [UNKNOWN_CODE] * 11
   )
@@ -109,7 +110,7 @@ def test_output_dtype():
 def test_output_length():
   sequence = "ACD--EFG"
   result = encode_sequence(sequence, MoleculeType.PROTEIN)
-  
+
   assert len(result) == len(sequence)
 
 
