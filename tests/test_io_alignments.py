@@ -80,7 +80,7 @@ def test_bad_fasta_alignmetn(tmp_path, content):
 # rna alns should reject T
 def test_wrong_nucleotide(tmp_path):
   path = tmp_path / "rna.fa"
-  path.write_text("x>\nACGT\ny>\nAGGU\n")
+  path.write_text(">x\nACGT\n>y\nAGGU\n")
 
   with pytest.raises(ValueError, match="invalid seq"):
     read_msa(path, "C", "rna")
