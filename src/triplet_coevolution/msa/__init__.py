@@ -1,4 +1,3 @@
-
 # msa processing
 
 from .synchronize import (
@@ -7,7 +6,7 @@ from .synchronize import (
 )
 
 
-# public MSA processing functions
+# public msa processing functions
 __all__ = [
   "synchronize",
   "unmatched_sequence_ids",
