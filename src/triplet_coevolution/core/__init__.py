@@ -31,3 +31,14 @@ __all__ = [
   "TripletMatch",
   "MatchedTripletMSA",
 ]
+
+
+# reference and msa coordinate mapping
+
+from .coordinates import (
+  SiteCoordinate,
+  ReferenceCoordinates,
+  reference_positions,
+  build_reference_map,
+  subset_reference_map,
+)
