@@ -17,6 +17,13 @@ from .alignment import (
   MatchedTripletMSA,
 )
 
+from .coordinates import (
+  SiteCoordinate,
+  ReferenceCoordinates,
+  reference_positions,
+  build_reference_map,
+  subset_reference_map,
+)
 
 # public objects available from triplet_coevolution.core
 __all__ = [
@@ -30,15 +37,9 @@ __all__ = [
   "ComponentMSA",
   "TripletMatch",
   "MatchedTripletMSA",
+  "SiteCoordinate",
+  "ReferenceCoordinates",
+  "reference_positions",
+  "build_reference_map",
+  "subset_reference_map",
 ]
-
-
-# reference and msa coordinate mapping
-
-from .coordinates import (
-  SiteCoordinate,
-  ReferenceCoordinates,
-  reference_positions,
-  build_reference_map,
-  subset_reference_map,
-)
