@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.colors import LinearSegmentedColormap
 
 from triplet_coevolution.core.coordinates import ReferenceCoordinates
 from triplet_coevolution.inference.mi import MIBlock, TripletMI
@@ -94,6 +95,20 @@ def _axis_ticks(mapping: ReferenceCoordinates, max_ticks: int) -> tuple[np.ndarr
 
   return indices, labels
 
+def _mi_cmap(score: str) -> LinearSegmentedColormap:
+  """use classic red green black heatmap colors"""
+
+  if score == "mi_apc":
+    colors = ["#06ff00", "#000000", "#ff2500"]
+  else:
+    colors = ["#000000", "#ff2500"]
+
+  # keep zero black and missing obs dark gray
+  return LinearSegmentedColormap.from_list(
+    f"mi_{score}",
+    colors,
+    N=257,
+  ).with_extremes(bad="#252525")
 
 def _draw_block(
   ax: Axes,
@@ -107,9 +122,7 @@ def _draw_block(
 ):
   """draw one mi matrix w ref labels and nan cells masked"""
 
-  cmap = plt.get_cmap(
-      "viridis" if score == "mi_bits" else "RdBu_r"
-  ).with_extremes(bad="0.85")
+  cmap = _mi_cmap(score)
 
   image = ax.imshow(
     np.ma.masked_invalid(data),
