@@ -1,0 +1,2 @@
+[console_scripts]
+triplet = triplet_coevolution.cli:app

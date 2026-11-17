@@ -34,7 +34,7 @@ def reference_positions(
     not (symbol.isalpha() or symbol in GAPS or symbol == "?")
     for symbol in gapped_reference
   ):
-    raise ValueError("ref seq has invalid symbols")
+    raise ValueError("reference sequence has invalid symbols")
 
   positions = []
   next_position = start

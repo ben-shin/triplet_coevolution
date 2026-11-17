@@ -1,0 +1,11 @@
+numpy<3,>=1.26
+biopython<2,>=1.86
+PyYAML<7,>=6
+typer<1,>=0.12
+
+[dev]
+pytest>=8
+ruff>=0.8
+
+[plots]
+matplotlib<4,>=3.8

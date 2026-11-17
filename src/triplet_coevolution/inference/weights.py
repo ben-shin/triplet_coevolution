@@ -56,7 +56,7 @@ def sequence_weights(
         components = (msa,)
         n = msa.n_sequences
     else:
-        raise TypeError("sequence_weights expects a ComponentMSa or MatchedTripletMSA")
+        raise TypeError("sequence_weights expects a ComponentMSA or MatchedTripletMSA")
 
     # require at least one idable res per seq in every comp
     arrays = []
@@ -67,7 +67,7 @@ def sequence_weights(
 
         if np.any(valid.sum(axis=1) == 0):
             raise ValueError(
-                f"component {component.name} has seqs w no canon res"
+                f"component {component.name} has seqs w no canonical res"
             )
 
         # joint overlap is a fraction of the full filtered msa length

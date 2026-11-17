@@ -62,7 +62,7 @@ def read_msa(
   # reject empty aln files
   if not records:
     raise ValueError(
-      f"no seqs found in aln: {path}"
+      f"no sequences found in aln: {path}"
     )
 
   # construct validated aln obj

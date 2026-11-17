@@ -107,8 +107,9 @@ def _draw_block(
 ):
   """draw one mi matrix w ref labels and nan cells masked"""
 
-  cmap = plt.get_cmap("viridis" if score == "mi_bits" else "RdBu_r").copy()
-  cmap.set_bad("0.85")
+  cmap = plt.get_cmap(
+      "viridis" if score == "mi_bits" else "RdBu_r"
+  ).with_extremes(bad="0.85")
 
   image = ax.imshow(
     np.ma.masked_invalid(data),
