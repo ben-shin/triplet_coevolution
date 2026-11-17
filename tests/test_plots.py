@@ -6,6 +6,7 @@ from dataclasses import replace
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.colors as to_hex
 import numpy as np
 import pytest
 
@@ -161,6 +162,62 @@ def test_all_invalid_scores(ab_block, ref_maps):
     assert np.ma.getmaskarray(ax.images[0].get_array()).all()
     assert any(x.get_text() == "no valid scores" for x in ax.texts)
     assert len(fig.axes) == 1
+  finally:
+    plt.close(fig)
+
+# check apc palette uses green neg black zero and red pos
+def test_classic_apc_colors(ab_block, ref_maps):
+  a_map, b_map, _ = ref_maps
+  fig, ax = plot_mi_block(ab_block, a_map, b_map)
+
+  try:
+    image = ax.images[0]
+    cmap = image.get_cmap()
+    norm = image.norm
+
+    assert to_hex(cmap(norm(float(norm.vmin)))) == "#06ff00"
+    assert to_hex(cmap(norm(0.0))) == "#000000"
+    assert to_hex(cmap(norm(float(norm.vmax)))) == "#ff2500"
+
+  finally:
+    plt.close(fig)
+
+
+# raw mi has no neg scores so use black to red
+def test_classic_raw_mi_colors(ab_block, ref_maps):
+  a_map, b_map, _ = ref_maps
+  fig, ax = plot_mi_block(
+    ab_block,
+    a_map,
+    b_map,
+    score="mi_bits",
+  )
+
+  try:
+    image = ax.images[0]
+    cmap = image.get_cmap()
+    norm = image.norm
+
+    assert to_hex(cmap(norm(0.0))) == "#000000"
+    assert to_hex(cmap(norm(float(norm.vmax)))) == "#ff2500"
+
+  finally:
+    plt.close(fig)
+
+
+# undefined scores shouldnt look identical to zero
+def test_classic_missing_color(ab_block, ref_maps):
+  a_map, b_map, _ = ref_maps
+  fig, ax = plot_mi_block(ab_block, a_map, b_map)
+
+  try:
+    image = ax.images[0]
+    cmap = image.get_cmap()
+
+    assert to_hex(cmap.get_bad()) == "#252525"
+    assert to_hex(cmap(image.norm(0.0))) == "#000000"
+    assert np.ma.is_masked(image.get_array()[1, 1])
+
   finally:
     plt.close(fig)
 
