@@ -229,6 +229,19 @@ def test_reject_unknown_ref(inputs):
   assert not out.exists()
 
 
+def test_truncated_stockholm_preserves_existing_files(inputs):
+  a, _, _, _, out, args = inputs
+  a.write_text(a.read_text(encoding="utf-8").removesuffix("//\n"), encoding="utf-8")
+  sentinel = out.parent / "previous-results.tsv"
+  sentinel.write_bytes(b"previous results\n")
+  result = runner.invoke(app, args)
+
+  assert result.exit_code == 1
+  assert "missing // terminator" in result.output
+  assert not out.exists()
+  assert sentinel.read_bytes() == b"previous results\n"
+
+
 # incomplete homolog mapping should fail rather than guess correspondences
 def test_reject_unknown_match(inputs):
   _, _, _, table, out, args = inputs

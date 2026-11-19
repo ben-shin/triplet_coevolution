@@ -42,24 +42,33 @@ def test_read_stockholm(tmp_path):
 def test_interleaved_stockholm_with_bom(tmp_path):
   path = tmp_path / "interleaved.sto"
   path.write_text(
-    "# STOCKHOLM 1.0\n#=GF ID example\nx\tAC\ny\tA-\n#=GC RF xx\n"
-    "\nx GT\ny GC\n#=GC RF xx\n//\n",
+    "\n# STOCKHOLM 1.0\n#=GF ID example\nx\tAC\ny\tA-\n#=GC RF xx\n"
+    "\nx GT\ny GC\n#=GC RF xx\n//\n\n",
     encoding="utf-8-sig",
   )
   assert read_msa(path, "A", "dna").sequences == ("ACGT", "A-GC")
 
 
-def test_stockholm_rejects_multiple_alignments(tmp_path):
+@pytest.mark.parametrize("second_record", ["# STOCKHOLM 1.0\ny GT\n//\n", "# STOCKHOLM 1.0\n//\n"])
+def test_stockholm_rejects_multiple_alignments(tmp_path, second_record):
   path = tmp_path / "two.sto"
-  path.write_text("# STOCKHOLM 1.0\nx AC\n//\n# STOCKHOLM 1.0\ny GT\n//\n")
+  path.write_text("# STOCKHOLM 1.0\nx AC\n//\n" + second_record)
   with pytest.raises(ValueError, match="More than one"):
     read_msa(path, "A", "dna")
 
 
-def test_stockholm_sequence_after_terminator(tmp_path):
+@pytest.mark.parametrize("extra", ["y GC\n", "//\n"])
+def test_stockholm_content_after_terminator(tmp_path, extra):
   path = tmp_path / "malformed.sto"
-  path.write_text("# STOCKHOLM 1.0\nx AC\n//\ny GC\n")
-  with pytest.raises(ValueError, match="malformed stockholm alignment"):
+  path.write_text("# STOCKHOLM 1.0\nx AC\n//\n" + extra)
+  with pytest.raises(ValueError, match="unexpected content after //"):
+    read_msa(path, "A", "dna")
+
+
+def test_truncated_interleaved_stockholm(tmp_path):
+  path = tmp_path / "truncated.sto"
+  path.write_text("# STOCKHOLM 1.0\nx AC\ny GT\n\nx TG\ny GC\n")
+  with pytest.raises(ValueError, match="missing // terminator"):
     read_msa(path, "A", "dna")
 
 

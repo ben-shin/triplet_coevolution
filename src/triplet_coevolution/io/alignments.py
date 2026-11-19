@@ -29,6 +29,30 @@ class _StockholmStream(TextIOWrapper):
     return super().readline(size).replace("\t", " ")
 
 
+def _validate_stockholm_record(handle: _StockholmStream) -> None:
+  """Check the record boundaries and leave the stream at its header."""
+  while True:
+    header_offset = handle.tell()
+    line = handle.readline()
+    if line.strip() or not line:
+      break
+  if line.strip() != "# STOCKHOLM 1.0":
+    raise ValueError("missing # STOCKHOLM 1.0 header")
+
+  terminated = False
+  for line in handle:
+    marker = line.strip()
+    if marker == "# STOCKHOLM 1.0":
+      raise ValueError("More than one Stockholm record header")
+    if terminated and marker:
+      raise ValueError("malformed stockholm alignment: unexpected content after // terminator")
+    if marker == "//":
+      terminated = True
+  if not terminated:
+    raise ValueError("incomplete Stockholm alignment: missing // terminator")
+  handle.seek(header_offset)
+
+
 def read_msa(
   path: str | Path,
   name: str,
@@ -62,6 +86,7 @@ def read_msa(
     if fmt == "stockholm":
       # Require one alignment, including any interleaved blocks within it.
       with _StockholmStream(path.open("rb"), encoding="utf-8-sig") as handle:
+        _validate_stockholm_record(handle)
         records = AlignIO.read(handle, fmt)
     else:
       with path.open("r", encoding="utf-8-sig") as handle:
