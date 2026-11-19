@@ -1,5 +1,7 @@
 """Common representation of hits and execution of local profile programs."""
 
+from __future__ import annotations
+
 import math
 import os
 import re
@@ -7,6 +9,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from triplet_coevolution.msa.builders import Placement
 
 
 @dataclass(frozen=True)
@@ -20,6 +26,10 @@ class Hit:
     identity: float | None = None
     coverage: float | None = None
     model_strand: str | None = None
+    model_first: int | None = None
+    model_last: int | None = None
+    placement: Placement | None = None
+    projection_method: str | None = None
 
 
 def execute(args, cwd=None, *, capture_stdout=False):
@@ -76,11 +86,23 @@ def table_rows(path: Path):
                 yield line.split()
 
 
-def external_hit(fields, seq_id, start, end, score, evalue, strand="+"):
+def external_hit(fields, seq_id, start, end, score, evalue, model_start, model_end, strand="+"):
     a, b = int(fields[start]), int(fields[end])
     value, bits = float(fields[evalue]), float(fields[score])
     if not math.isfinite(value) or value < 0 or not math.isfinite(bits) or min(a, b) < 1:
         raise ValueError("invalid reported search score, E-value, or coordinate")
     if strand not in ("+", "-") or (strand == "+" and b < a) or (strand == "-" and a < b):
         raise ValueError("invalid reported hit orientation")
-    return Hit(seq_id, min(a, b), max(a, b), strand, bits, value)
+    m, n = int(fields[model_start]), int(fields[model_end])
+    if min(m, n) < 1:
+        raise ValueError("invalid reported model coordinate")
+    return Hit(
+        seq_id,
+        min(a, b),
+        max(a, b),
+        strand,
+        bits,
+        value,
+        model_first=min(m, n),
+        model_last=max(m, n),
+    )

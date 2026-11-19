@@ -153,8 +153,12 @@ def write_advanced_results(
     ]
     fixed = []
     eligible = 0
+    selection = None
     if threebody:
         fixed, eligible = _candidates(triplet_candidates, maps, axes, max_triplets, seed)
+        selection = "exhaustive" if len(fixed) == eligible else "uniform"
+        if triplet_candidates is not None:
+            selection = "file"
     labels = read_contacts(contacts, maps) if contacts is not None else {}
     if extra_inputs != {
         "triplet_candidates": _identity(triplet_candidates),
@@ -344,9 +348,7 @@ def write_advanced_results(
             "eligible": eligible,
             "tested": len(fixed),
             "finite": int(np.count_nonzero(np.isfinite(observed.get("threebody", [])))),
-            "selection": ("file" if triplet_candidates is not None else "uniform")
-            if threebody
-            else None,
+            "selection": selection,
         },
         "hypotheses": {k: len(v) for k, v in observed.items()},
         "null_model": "independent whole-component row permutations within strata"

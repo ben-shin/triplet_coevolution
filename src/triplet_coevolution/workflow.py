@@ -20,7 +20,7 @@ from triplet_coevolution.io.metadata import REQUIRED_COLUMNS
 from triplet_coevolution.io.profiles import read_reference
 from triplet_coevolution.matching.orthology import read_evidence
 from triplet_coevolution.matching.triplets import match_groups
-from triplet_coevolution.msa.builders import anchored_msa
+from triplet_coevolution.msa.builders import assemble_msa
 from triplet_coevolution.msa.qc import component_qc
 from triplet_coevolution.search.retrieve import retrieve
 from triplet_coevolution.search.shared import program_versions
@@ -114,10 +114,10 @@ def _run_searches(stage, cfg):
     for name in COMPONENTS:
         comp = cfg["components"][name]
         reference = read_reference(comp)
-        hits, seqs = retrieve(comp, reference)
+        hits, _ = retrieve(comp, reference)
         programs[name] = program_versions(comp)
         with (search_dir / f"{name}_hits.tsv").open("w", encoding="utf-8", newline="") as handle:
-            fields = (
+            source_fields = (
                 "seq_id",
                 "first",
                 "last",
@@ -127,12 +127,38 @@ def _run_searches(stage, cfg):
                 "identity",
                 "coverage",
                 "model_strand",
+                "model_first",
+                "model_last",
+                "projection_method",
+            )
+            fields = (
+                *source_fields,
+                "reference_first",
+                "reference_last",
+                "reference_pos_first",
+                "reference_pos_last",
             )
             writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
             writer.writeheader()
-            writer.writerows(asdict(hits[key]) for key in sorted(hits))
-        components[name] = anchored_msa(
-            name, comp["molecule"], comp["reference_id"], reference, seqs
+            for key in sorted(hits):
+                hit = hits[key]
+                placement = hit.placement
+                offset = comp["reference_start"] - 1
+                writer.writerow(
+                    {
+                        **{field: getattr(hit, field) for field in source_fields},
+                        "reference_first": placement.first,
+                        "reference_last": placement.last,
+                        "reference_pos_first": placement.first + offset,
+                        "reference_pos_last": placement.last + offset,
+                    }
+                )
+        components[name] = assemble_msa(
+            name,
+            comp["molecule"],
+            comp["reference_id"],
+            reference,
+            {key: hit.placement.row(len(reference)) for key, hit in hits.items()},
         )
         _write_fasta(search_dir / f"{name}.fasta", components[name])
         available[name] = set(hits)

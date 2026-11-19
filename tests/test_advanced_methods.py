@@ -211,3 +211,15 @@ def test_outputs_provenance_and_null_reproducibility(tmp_path):
     assert ranks[1]["a_col"] == "2" and ranks[1]["a_reference_pos"] == "102"
     metrics = json.loads((tmp_path / "one" / "contacts.json").read_text())
     assert metrics["methods"]["dca"]["scored"] == 2
+
+
+@pytest.mark.parametrize("limit,expected", [(4, "uniform"), (8, "exhaustive"), (9, "exhaustive")])
+def test_candidate_manifest_identifies_selection(tmp_path, limit, expected):
+    msa = alignment([(a * 2, b * 2, c * 2) for a, b, c in xor_rows()])
+    maps = [build_reference_map(c, c.ids[0]) for c in msa.components]
+    result = write_advanced_results(
+        tmp_path, msa, maps, sequence_weights(msa), threebody=True, max_triplets=limit
+    )
+    assert result["candidates"] == {
+        "eligible": 8, "tested": min(limit, 8), "finite": min(limit, 8), "selection": expected,
+    }

@@ -38,7 +38,7 @@ def search(comp, database, work):
             "-max_target_seqs",
             max(1, count),
             "-outfmt",
-            "7 sseqid sstart send bitscore evalue",
+            "7 sseqid sstart send bitscore evalue qstart qend",
             "-out",
             table.name,
         ],
@@ -56,7 +56,7 @@ def search(comp, database, work):
                 and line.strip() != "Search has CONVERGED!"
             ):
                 row = line.split()
-                if len(row) != 5:
+                if len(row) != 7:
                     raise ValueError("malformed PSI-BLAST output")
-                final.append(external_hit(row, row[0].removeprefix("lcl|"), 1, 2, 3, 4))
+                final.append(external_hit(row, row[0].removeprefix("lcl|"), 1, 2, 3, 4, 5, 6))
     yield from final

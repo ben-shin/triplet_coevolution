@@ -22,4 +22,4 @@ def search(comp, database, work):
     for row in table_rows(table):
         if len(row) < 17:
             raise ValueError("malformed Infernal hit table")
-        yield external_hit(row, row[0], 7, 8, 14, 15, row[9])
+        yield external_hit(row, row[0], 7, 8, 14, 15, 5, 6, row[9])

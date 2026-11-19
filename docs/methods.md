@@ -26,7 +26,7 @@ Each off-diagonal state block is centered along both axes to obtain the zero-sum
 
 ## Three-site inference
 
-`--threebody` evaluates triples with one site from each component. If all eligible triples fit within `--max-triplets` (default 1,000), all are scored. Otherwise the algorithm draws a uniform sample without replacement from the coordinate grid using `--seed`. Sampling requires memory proportional to the candidate budget. A small sample can miss a real interaction. Prespecified candidates allow a focused experiment and make it repeatable across runs.
+`--threebody` evaluates triples with one site from each component. If all eligible triples fit within `--max-triplets` (default 1,000), all are scored and the report labels the selection `exhaustive`. Otherwise the algorithm draws a `uniform` sample without replacement from the coordinate grid using `--seed`. Sampling requires memory proportional to the candidate budget. A small sample can miss a real interaction. Prespecified candidates are labeled `file` and allow a focused experiment that is repeatable across runs.
 
 Supply a tab-separated file with a header and one row per triple using `--triplet-candidates`. Use one-based **original alignment columns**, including alignment gaps in the numbering. This file selects one triple.
 
