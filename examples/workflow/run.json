@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "evidence": "evidence.tsv",
+  "paralogs": "priority",
+  "components": {
+    "A": {
+      "molecule": "protein",
+      "reference_id": "prot_ref",
+      "reference": "A_ref.fasta",
+      "database": "A_database.fasta",
+      "backend": "reference",
+      "min_identity": 0.55,
+      "min_coverage": 0.7
+    },
+    "B": {
+      "molecule": "dna",
+      "reference_id": "dna_ref",
+      "reference": "B_ref.fasta",
+      "database": "B_database.fasta",
+      "backend": "reference",
+      "min_identity": 0.55,
+      "min_coverage": 0.7
+    },
+    "C": {
+      "molecule": "rna",
+      "reference_id": "rna_ref",
+      "reference": "C_ref.fasta",
+      "database": "C_database.fasta",
+      "backend": "reference",
+      "min_identity": 0.55,
+      "min_coverage": 0.7
+    }
+  },
+  "analysis": {
+    "dca": true,
+    "threebody": true,
+    "max_triplets": 32,
+    "permutations": 19,
+    "seed": 7,
+    "contacts": "synthetic_labels.tsv"
+  }
+}

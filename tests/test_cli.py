@@ -4,13 +4,15 @@
 import csv
 import hashlib
 import json
+import shutil
 import sys
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from triplet_coevolution import __version__
-from triplet_coevolution.cli import app
+from triplet_coevolution.cli import _stage_run, app
 
 runner = CliRunner()
 
@@ -391,3 +393,20 @@ def test_write_failure_rolls_back_run(inputs, monkeypatch, already_exists):
     assert list(out.iterdir()) == []
   else:
     assert not out.exists()
+
+
+def test_workflow_manifest_is_published_after_nested_analysis(tmp_path, monkeypatch):
+  out = tmp_path / "published"
+  order = []
+  copy = shutil.copyfileobj
+
+  def record(source, dest):
+    order.append(Path(dest.name).relative_to(out).as_posix())
+    copy(source, dest)
+
+  monkeypatch.setattr(shutil, "copyfileobj", record)
+  with _stage_run(out) as stage:
+    (stage / "analysis").mkdir()
+    for name in ("workflow_summary.json", "analysis/run_summary.json", "analysis/report.html"):
+      (stage / name).write_text(name, encoding="utf-8")
+  assert order == ["analysis/report.html", "analysis/run_summary.json", "workflow_summary.json"]

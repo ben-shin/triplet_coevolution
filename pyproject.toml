@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "triplet-coevolution"
 dynamic = ["version"]
-description = "Pairwise mutual information across three matched protein or nucleotide alignments"
+description = "Search, pair and model coevolution across three protein or nucleotide components"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,6 +20,9 @@ plots = ["matplotlib>=3.8,<4"]
 
 [project.scripts]
 triplet = "triplet_coevolution.cli:app"
+
+[project.urls]
+Repository = "https://github.com/ben-shin/triplet_coevolution"
 
 [tool.setuptools.dynamic]
 version = {attr = "triplet_coevolution.__version__"}

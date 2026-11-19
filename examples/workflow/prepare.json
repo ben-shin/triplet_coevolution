@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "evidence": "evidence.tsv",
+  "paralogs": "priority",
+  "components": {
+    "A": {
+      "molecule": "protein",
+      "reference_id": "prot_ref",
+      "alignment": "../mixed/protein.fasta"
+    },
+    "B": {
+      "molecule": "dna",
+      "reference_id": "dna_ref",
+      "alignment": "../mixed/dna.fasta"
+    },
+    "C": {
+      "molecule": "rna",
+      "reference_id": "rna_ref",
+      "alignment": "../mixed/rna.fasta"
+    }
+  }
+}

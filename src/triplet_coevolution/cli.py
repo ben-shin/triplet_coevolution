@@ -3,6 +3,7 @@
 import csv
 import hashlib
 import json
+import math
 import shutil
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
@@ -21,13 +22,19 @@ from triplet_coevolution.io.metadata import read_triplet_table
 from triplet_coevolution.msa.masking import apply_triplet_masks, column_mask
 from triplet_coevolution.msa.qc import triplet_qc
 from triplet_coevolution.msa.synchronize import synchronize
+from triplet_coevolution.reporting.html import write_report
+from triplet_coevolution.reporting.network import ranked_tables, write_network
+from triplet_coevolution.workflow import prepare, run
 
 app = typer.Typer(
-    help="Measure pairwise mutual information across three matched sequence alignments.",
+    help="Search, match and score three protein or nucleotide components.",
     no_args_is_help=True,
 )
 
 SUMMARY_NAME = "run_summary.json"
+
+app.command("prepare")(prepare)
+app.command("run")(run)
 
 
 def _show_version(value: bool) -> None:
@@ -45,7 +52,7 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """Analyze curated triplets of protein, DNA, or RNA sequences."""
+    """Analyze coevolution in protein, DNA and RNA sequences."""
 
 
 def _check_output(out: Path) -> None:
@@ -81,7 +88,12 @@ def _stage_run(out: Path) -> Iterator[Path]:
             yield stage
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
-                artifacts = sorted(stage.rglob("*"), key=lambda p: (p.name == SUMMARY_NAME, p))
+                final_manifest = stage / "workflow_summary.json"
+                if not final_manifest.exists():
+                    final_manifest = stage / SUMMARY_NAME
+                artifacts = sorted(
+                    stage.rglob("*"), key=lambda p: (p == final_manifest, p.name == SUMMARY_NAME, p)
+                )
                 for artifact in artifacts:
                     target = out / artifact.relative_to(stage)
                     if artifact.is_dir():
@@ -207,15 +219,68 @@ def analyze(
             "--plots/--no-plots", help="Save PNG heatmaps of the full filtered score matrices."
         ),
     ] = False,
+    dca: Annotated[bool, typer.Option("--dca", help="Fit a joint mean-field Potts model.")] = False,
+    threebody: Annotated[
+        bool, typer.Option("--threebody", help="Estimate a three-site Potts interaction for ABC.")
+    ] = False,
+    threebody_model: Annotated[
+        str, typer.Option("--threebody-model", help="Three-body fit: local or global.")
+    ] = "local",
+    global_l2: Annotated[
+        float, typer.Option("--global-l2", help="Positive regularization for global three-body fit.")
+    ] = 0.1,
+    ridge: Annotated[float, typer.Option("--ridge", help="Positive DCA ridge penalty.")] = 0.1,
+    pseudocount: Annotated[
+        float, typer.Option("--pseudocount", help="Three-body smoothing parameter.")
+    ] = 0.5,
+    max_triplets: Annotated[
+        int, typer.Option("--max-triplets", help="Maximum number of ABC candidates to fit.")
+    ] = 1000,
+    triplet_candidates: Annotated[
+        Path | None, typer.Option("--triplet-candidates", help="TSV of candidate ABC site triples.")
+    ] = None,
+    permutations: Annotated[
+        int, typer.Option("--permutations", help="Null replicates for empirical tests (0 disables).")
+    ] = 0,
+    seed: Annotated[int, typer.Option("--seed", help="Random seed for permutation tests.")] = 0,
+    strata_column: Annotated[
+        str | None,
+        typer.Option("--strata-column", help="Match-table column defining permutation groups."),
+    ] = None,
+    contacts: Annotated[
+        Path | None, typer.Option("--contacts", help="Reference-coordinate contact labels TSV.")
+    ] = None,
 ) -> None:
-    """Rank AB, AC, and BC site pairs using curated one-to-one sequence matches."""
+    """Score curated alignments, benchmark associations and write a local HTML report."""
     try:
         if score not in {"mi_bits", "mi_apc"}:
             raise ValueError("--score must be mi_bits or mi_apc")
         if fmt not in {"csv", "tsv"}:
             raise ValueError("--fmt must be csv or tsv")
-        if min_valid < 1 or max_pairs < 1:
-            raise ValueError("--min-valid and --max-pairs must be positive integers")
+        if min_valid < 1 or max_pairs < 1 or max_triplets < 1:
+            raise ValueError("--min-valid, --max-pairs and --max-triplets must be positive")
+        if permutations < 0 or seed < 0:
+            raise ValueError("--permutations and --seed must be nonnegative")
+        if strata_column is not None and not permutations:
+            raise ValueError("--strata-column requires a positive --permutations value")
+        if triplet_candidates is not None and not threebody:
+            raise ValueError("--triplet-candidates requires --threebody")
+        if threebody_model not in {"local", "global"}:
+            raise ValueError("--threebody-model must be local or global")
+        if threebody_model == "global" and not threebody:
+            raise ValueError("--threebody-model global requires --threebody")
+        for name, value in (("--ridge", ridge), ("--global-l2", global_l2),
+                            ("--pseudocount", pseudocount)):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if not dca and ridge != 0.1:
+            raise ValueError("--ridge requires --dca")
+        if global_l2 != 0.1 and threebody_model != "global":
+            raise ValueError("--global-l2 requires --threebody-model global")
+        if pseudocount != 0.5 and (not threebody or threebody_model != "local"):
+            raise ValueError("--pseudocount requires --threebody with the local model")
+        if max_triplets != 1000 and not threebody:
+            raise ValueError("--max-triplets requires --threebody")
         out = out.expanduser()
         _check_output(out)
 
@@ -234,6 +299,9 @@ def analyze(
             key: path.expanduser()
             for key, path in zip(("A", "B", "C", "matches"), (a, b, c, matches))
         }
+        for key, path in (("triplet_candidates", triplet_candidates), ("contacts", contacts)):
+            if path is not None:
+                paths[key] = path.expanduser()
         stamps = {key: _file_stamp(path) for key, path in paths.items()}
         inputs = {key: _input_identity(path) for key, path in paths.items()}
         original = tuple(
@@ -241,6 +309,13 @@ def analyze(
             for name, molecule in zip(("A", "B", "C"), (a_type, b_type, c_type))
         )
         table = read_triplet_table(paths["matches"])
+        strata = None
+        if strata_column is not None:
+            if strata_column not in table.extra_columns:
+                raise ValueError(f"unknown permutation stratum column in match table: {strata_column}")
+            strata = tuple(row[strata_column] for row in table.annotations)
+            if not all(strata):
+                raise ValueError(f"empty permutation group in match table column {strata_column}")
         for key, path in paths.items():
             if _file_stamp(path) != stamps[key]:
                 raise ValueError(
@@ -286,6 +361,21 @@ def analyze(
         }
         with _stage_run(out) as stage:
             tables = write_triplet_mi_tables(stage, result, *maps, **table_options)
+            advanced = {}
+            if dca or threebody or permutations or contacts is not None:
+                from triplet_coevolution.inference.advanced import write_advanced_results
+
+                advanced = write_advanced_results(
+                    stage, filtered.msa, maps, weights, dca=dca, threebody=threebody,
+                    ridge=ridge, pseudocount=pseudocount, max_triplets=max_triplets,
+                    threebody_model=threebody_model, global_l2=global_l2,
+                    triplet_candidates=paths.get("triplet_candidates"), permutations=permutations,
+                    seed=seed, strata=strata, contacts=paths.get("contacts"),
+                    mi_result=result, **table_options,
+                )
+                for key in ("triplet_candidates", "contacts"):
+                    if key in paths and _file_stamp(paths[key]) != stamps[key]:
+                        raise ValueError(f"input changed while reading: {paths[key]}")
             figures = (
                 save_mi_plots(stage / "figures", result, *maps, score=score, min_valid=min_valid)
                 if plots
@@ -313,6 +403,7 @@ def analyze(
                 "settings": {**mask_options, **weighting_options, **table_options, "plots": plots},
                 "matched_observations": matched.n_observations,
                 "effective_depth": weights.n_eff,
+                "advanced": advanced,
                 "outputs": {
                     "tables": {
                         name.upper(): {"path": path.name, "rows": _row_count(path, fmt)}
@@ -326,6 +417,12 @@ def analyze(
                     },
                 },
             }
+            if advanced:
+                advanced["settings"]["strata_column"] = strata_column
+            ranked = ranked_tables(summary)
+            summary["outputs"]["network"] = write_network(stage, ranked)
+            summary["outputs"]["report"] = "report.html"
+            write_report(stage, summary, ranked)
             (stage / SUMMARY_NAME).write_text(
                 json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
                 encoding="utf-8",
@@ -342,6 +439,7 @@ def analyze(
         typer.echo(f"{name}: {out / path.name}")
     if plots:
         typer.echo(f"plots: {out / 'figures'}")
+    typer.echo(f"report: {out / 'report.html'}")
     typer.echo(f"summary: {out / SUMMARY_NAME}")
 
 

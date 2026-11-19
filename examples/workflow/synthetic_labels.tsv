@@ -1,0 +1,5 @@
+x_component	x_reference_id	x_reference_pos	y_component	y_reference_id	y_reference_pos	contact
+A	prot_ref	2	B	dna_ref	2	1
+A	prot_ref	4	B	dna_ref	5	1
+A	prot_ref	2	B	dna_ref	5	0
+A	prot_ref	4	B	dna_ref	2	0
