@@ -6,6 +6,7 @@ import pytest
 from triplet_coevolution.core.alphabets import MoleculeType
 from triplet_coevolution.io.alignments import read_msa
 
+
 # read aln fasta w/ lowercase, gaps, and missing positions
 def test_read_fasta(tmp_path):
   path = tmp_path / "protein.fasta"
@@ -36,6 +37,36 @@ def test_read_stockholm(tmp_path):
 
   assert msa.ids == ("c1", "c2")
   assert msa.n_sequences == 2
+
+
+def test_interleaved_stockholm_with_bom(tmp_path):
+  path = tmp_path / "interleaved.sto"
+  path.write_text(
+    "# STOCKHOLM 1.0\n#=GF ID example\nx\tAC\ny\tA-\n#=GC RF xx\n"
+    "\nx GT\ny GC\n#=GC RF xx\n//\n",
+    encoding="utf-8-sig",
+  )
+  assert read_msa(path, "A", "dna").sequences == ("ACGT", "A-GC")
+
+
+def test_stockholm_rejects_multiple_alignments(tmp_path):
+  path = tmp_path / "two.sto"
+  path.write_text("# STOCKHOLM 1.0\nx AC\n//\n# STOCKHOLM 1.0\ny GT\n//\n")
+  with pytest.raises(ValueError, match="More than one"):
+    read_msa(path, "A", "dna")
+
+
+def test_stockholm_sequence_after_terminator(tmp_path):
+  path = tmp_path / "malformed.sto"
+  path.write_text("# STOCKHOLM 1.0\nx AC\n//\ny GC\n")
+  with pytest.raises(ValueError, match="malformed stockholm alignment"):
+    read_msa(path, "A", "dna")
+
+
+def test_fasta_with_bom(tmp_path):
+  path = tmp_path / "bom.fa"
+  path.write_text(">a\nAC\n>b\nGC\n", encoding="utf-8-sig")
+  assert read_msa(path, "A", "dna").ids == ("a", "b")
 
 # reject missing aln files
 def test_missing_file(tmp_path):

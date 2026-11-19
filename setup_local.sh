@@ -14,7 +14,7 @@ if sys.version_info < (3, 11):
 
 "$PYTHON" -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pip install -e ".[dev,plots]"
 
 echo "Installation complete."
 .venv/bin/triplet --help

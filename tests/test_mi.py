@@ -6,9 +6,9 @@ import pytest
 
 from triplet_coevolution.core.alignment import ComponentMSA
 from triplet_coevolution.inference.mi import (
-  weighted_mi,
-  mutual_information_block,
   apc,
+  mutual_information_block,
+  weighted_mi,
 )
 
 
@@ -18,6 +18,11 @@ def test_perfect_binary_mi():
   y = np.array([2, 3, 2, 3])
 
   assert weighted_mi(x, y, 20, 4) == pytest.approx(1)
+
+
+def test_unsigned_encoded_columns():
+  states = np.array([0, 1, 0, 1], dtype=np.uint64)
+  assert weighted_mi(states, states, np.uint64(2), np.uint64(2)) == pytest.approx(1)
 
 
 # independent binary states should give zero mi

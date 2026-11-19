@@ -1,28 +1,19 @@
-# msa processing
+"""Synchronization, quality control, and masking for matched alignments."""
 
-from .synchronize import (
-  synchronize,
-  unmatched_sequence_ids,
-)
+from .masking import MaskedComponent, MaskedTriplet, apply_mask, apply_triplet_masks, column_mask
+from .qc import ComponentQC, TripletQC, component_qc, triplet_qc
+from .synchronize import synchronize, unmatched_sequence_ids
 
-
-# public msa processing functions
 __all__ = [
+  "ComponentQC",
+  "MaskedComponent",
+  "MaskedTriplet",
+  "TripletQC",
+  "apply_mask",
+  "apply_triplet_masks",
+  "column_mask",
+  "component_qc",
   "synchronize",
+  "triplet_qc",
   "unmatched_sequence_ids",
 ]
-
-
-# qc
-
-from .qc import ComponentQC, TripletQC, component_qc, triplet_qc
-
-# masking
-
-from .masking import (
-    MaskedComponent,
-    MaskedTriplet,
-    column_mask,
-    apply_mask,
-    apply_triplet_masks,
-)

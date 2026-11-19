@@ -1,6 +1,7 @@
 # reweight redundant homs using canon seq id
 
 from dataclasses import dataclass
+from math import prod
 
 import numpy as np
 
@@ -38,12 +39,11 @@ def sequence_weights(
     identity_threshold: float = 0.8,
     min_overlap: float = 0.5,
 ) -> SequenceWeightResult:
-    """"calculate identity based weights for one msa or matched triplets
-    compare canon res only, ignore gaps/ambig
-    each comp contributes equally to triplet identity
-    each comp must hav eneough jointly observed canon cols
-    a seq counts as its owen neightbor even if its coverage is low
-    n_eff is a sum of weights not phylogenetic independence
+    """Calculate identity-based weights for one MSA or matched triplets.
+
+    Each component contributes equally to triplet identity and must meet
+    the overlap threshold using jointly observed canonical sites. Each
+    observation counts as its own neighbor. Effective depth sums the weights.
     """
 
     identity_threshold = _check_fraction(identity_threshold, "identity_threshold")
@@ -70,30 +70,33 @@ def sequence_weights(
                 f"component {component.name} has seqs w no canonical res"
             )
 
-        # joint overlap is a fraction of the full filtered msa length
-        required = max(1, int(np.ceil(min_overlap * component.n_sites)))
-        arrays.append((matrix, valid, required))
+        arrays.append((matrix, valid))
 
     neighbor_counts = np.zeros(n, dtype=np.int64)
 
+    # Add the component fractions using integer counts, rounding only the
+    # final mean. For example, 7/10, 7/10 and 10/10 must meet an 80% cutoff.
+    max_denominator = len(components) * prod(component.n_sites for component in components)
+    count_dtype = np.int64 if max_denominator <= 2**53 else object
+
     # compare one obs w all others at a time to avoid massive NxN storage
     for i in range(n):
-        mean_identity = np.zeros(n, dtype=np.float64)
+        numerator = np.zeros(n, dtype=count_dtype)
+        denominator = np.ones(n, dtype=count_dtype)
         enough_overlap = np.ones(n, dtype=bool)
 
-        for matrix, valid, required in arrays:
+        for matrix, valid in arrays:
             both = valid & valid[i]
             overlap = both.sum(axis=1)
             matched = np.count_nonzero(both & (matrix == matrix[i]), axis=1)
 
-            identity = np.zeros(n, dtype=np.float64)
-            np.divide(matched, overlap, out=identity, where=overlap > 0)
+            numerator = numerator * overlap + matched * denominator
+            denominator *= overlap
+            enough_overlap &= (overlap > 0) & (overlap / matrix.shape[1] >= min_overlap)
 
-            mean_identity += identity
-            enough_overlap &= overlap >= required
-
-        mean_identity /= len(arrays)
-        neighbors = enough_overlap & (mean_identity >= identity_threshold)
+        neighbors = np.zeros(n, dtype=bool)
+        mean_identity = numerator[enough_overlap] / (denominator[enough_overlap] * len(arrays))
+        neighbors[enough_overlap] = mean_identity >= identity_threshold
 
         # a seq always belongs to its own redundant cluster
         neighbors[i] = True

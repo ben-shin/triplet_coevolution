@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
-from numpy.ma.extras import isin
+
 from triplet_coevolution.core.alignment import ComponentMSA, MatchedTripletMSA
 from triplet_coevolution.core.alphabets import CANONICAL
 from triplet_coevolution.inference.weights import SequenceWeightResult
@@ -35,9 +35,11 @@ class TripletMI:
 
 
 def _check_min_valid(min_valid: int) -> int:
-    if isinstance(min_valid, (bool, np.bool_)) or not isinstance(min_valid, (int, np.integer)):
-        raise ValueError("min_valid must be a positive integer")
-    if min_valid < 1:
+    if (
+        isinstance(min_valid, (bool, np.bool_))
+        or not isinstance(min_valid, (int, np.integer))
+        or min_valid < 1
+    ):
         raise ValueError("min_valid must be a positive integer")
     return int(min_valid)
 
@@ -93,7 +95,7 @@ def _site_mi(
         return np.nan, n_valid, valid_weight
 
     # count weighted join states and normalize by pair specific weight
-    indices = x[valid].astype(np.int64) * q_y + y[valid]
+    indices = x[valid].astype(np.int64) * q_y + y[valid].astype(np.int64)
     counts = np.bincount(
         indices,
         weights=weights[valid],
@@ -135,7 +137,7 @@ def weighted_mi(
             raise ValueError(f"{name} must be a positive int")
 
     row_weights = _get_weights(weights, x.size)
-    return _site_mi(x, y, n_states_x, n_states_y, row_weights, min_valid)[0]
+    return _site_mi(x, y, int(n_states_x), int(n_states_y), row_weights, min_valid)[0]
 
 
 def apc(scores: np.ndarray) -> np.ndarray:

@@ -1,27 +1,26 @@
 
 # evolutionary coupling inference
 
+from .mi import (
+  MIBlock,
+  TripletMI,
+  apc,
+  mutual_information_block,
+  triplet_mi,
+  weighted_mi,
+)
 from .weights import (
   SequenceWeightResult,
   sequence_weights,
 )
 
-from .mi import (
-  MIBlock,
-  TripletMI,
-  weighted_mi,
-  mutual_information_block,
-  triplet_mi,
-  apc,
-)
-
 __all__ = [
-  "SequenceWeightResult",
-  "sequence_weights",
   "MIBlock",
+  "SequenceWeightResult",
   "TripletMI",
-  "weighted_mi",
-  "mutual_information_block",
-  "triplet_mi",
   "apc",
+  "mutual_information_block",
+  "sequence_weights",
+  "triplet_mi",
+  "weighted_mi",
 ]

@@ -1,2 +1,3 @@
-# 3 body coevolution
-__version__ = "0.1.0"
+"""Analyze coevolution across three matched sequence alignments."""
+
+__version__ = "1.0.0"

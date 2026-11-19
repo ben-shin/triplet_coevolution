@@ -1,6 +1,7 @@
 # map msa cols to original aln cols and reference res positions
 
 from dataclasses import dataclass
+from itertools import pairwise
 from numbers import Integral
 
 from triplet_coevolution.core.alignment import ComponentMSA
@@ -96,7 +97,7 @@ class ReferenceCoordinates:
     ):
       raise ValueError("original columns must be nonnegative integers")
 
-    if any(int(a) >= int(b) for a, b in zip(columns, columns[1:])):
+    if any(int(a) >= int(b) for a, b in pairwise(columns)):
       raise ValueError("original columns must be strictly increasing")
 
     if any(not isinstance(symbol, str) or len(symbol) != 1 for symbol in symbols):
@@ -116,7 +117,7 @@ class ReferenceCoordinates:
     ):
       raise ValueError("reference positions must be positive integers")
 
-    if any(int(a) >= int(b) for a, b in zip(numbered, numbered[1:])):
+    if any(int(a) >= int(b) for a, b in pairwise(numbered)):
       raise ValueError("reference positions must be strictly increasing")
 
     object.__setattr__(self, "original_columns", tuple(int(i) for i in columns))
@@ -210,7 +211,7 @@ def subset_reference_map(
   if any(i < 0 or i >= mapping.n_sites for i in indices):
     raise IndexError("kept col outside current reference mapping")
 
-  if any(a >= b for a, b in zip(indices, indices[1:])):
+  if any(a >= b for a, b in pairwise(indices)):
     raise ValueError("kept cols must be unique and increasing")
 
   return ReferenceCoordinates(

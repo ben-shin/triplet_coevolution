@@ -2,12 +2,15 @@
 # tests for cli.py matched msa analysis and output files
 
 import csv
+import hashlib
+import json
+import sys
 
 import pytest
 from typer.testing import CliRunner
 
+from triplet_coevolution import __version__
 from triplet_coevolution.cli import app
-
 
 runner = CliRunner()
 
@@ -80,6 +83,12 @@ def test_analyze_registered():
   assert "analyze" in result.output
 
 
+def test_version():
+  result = runner.invoke(app, ["--version"])
+  assert result.exit_code == 0
+  assert result.output.strip() == f"triplet {__version__}"
+
+
 # required inputs must be explicitly given
 def test_analyze_help_requires_curated_inputs():
   result = runner.invoke(app, ["analyze", "--help"])
@@ -119,6 +128,53 @@ def test_masked_reference_positions(inputs):
   )
 
 
+def test_summary_records_provenance_and_masking(inputs):
+  a, b, c, matches, out, args = inputs
+  out.mkdir()  # An existing empty output directory is supported.
+  result = runner.invoke(app, args + [
+    "--min-coverage", "0.75", "--a-start", "101", "--require-reference",
+    "--max-pairs", "3", "--fmt", "csv", "--score", "mi_bits",
+  ])
+  assert result.exit_code == 0, result.output
+  summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+  assert summary["schema_version"] == 1
+  assert summary["software_version"] == __version__
+  for label, path in zip(("A", "B", "C", "matches"), (a, b, c, matches)):
+    assert summary["inputs"][label] == {
+      "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+  assert summary["settings"] == {
+    "min_coverage": 0.75, "max_gap_fraction": 0.5, "max_missing_fraction": 0.5,
+    "identity_threshold": 0.8, "min_overlap": 0.5, "min_valid": 2,
+    "max_pairs": 3, "score": "mi_bits", "fmt": "csv", "plots": False,
+    "require_reference": True,
+  }
+  assert summary["matched_observations"] == 4
+  assert summary["effective_depth"] == pytest.approx(2)
+  assert summary["components"]["A"] == {
+    "molecule_type": "protein", "reference_id": "a_ref", "reference_start": 101,
+    "input_sequences": 5, "original_sites": 4, "retained_sites": 3,
+    "retained_columns": [1, 3, 4], "mean_coverage": 0.875,
+    "mean_gap_fraction": 0.125, "mean_missing_fraction": 0.0,
+  }
+  assert summary["outputs"]["figures"] == {}
+  for pair in ("AB", "AC", "BC"):
+    filename = f"mi_{pair.lower()}.csv"
+    assert summary["outputs"]["tables"][pair] == {"path": filename, "rows": 3}
+    assert len(_rows(out / filename, delimiter=",")) == 3
+
+
+def test_no_pairs_still_reports_empty_tables(inputs):
+  *_, out, args = inputs
+  result = runner.invoke(app, args + ["--min-valid", "100"])
+  assert result.exit_code == 0, result.output
+  summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+  for pair in ("AB", "AC", "BC"):
+    table = summary["outputs"]["tables"][pair]
+    assert table["rows"] == 0
+    assert _rows(out / table["path"]) == []
+
+
 # can rank raw mi and export csv instead of tsv
 def test_csv_raw_mi_and_limit(inputs):
   _, _, _, _, out, args = inputs
@@ -152,8 +208,12 @@ def test_analyze_with_plots(inputs):
   result = runner.invoke(app, args + ["--plots"])
 
   assert result.exit_code == 0, result.output
+  summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+  assert summary["settings"]["plots"] is True
   for name in ("ab", "ac", "bc", "triplet"):
     path = out / "figures" / f"mi_apc_{name}.png"
+    key = name if name == "triplet" else name.upper()
+    assert out / summary["outputs"]["figures"][key] == path
     assert path.is_file()
     assert path.stat().st_size > 1000
 
@@ -244,6 +304,8 @@ def test_mixed_alphabet_triplet(inputs):
 
   assert result.exit_code == 0, result.output
   assert (out / "mi_bc.tsv").exists()
+  summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+  assert [summary["components"][name]["molecule_type"] for name in "ABC"] == ["protein", "dna", "rna"]
 
 
 # invalid molecular alphabet should be rejected
@@ -254,3 +316,65 @@ def test_reject_bad_type(inputs):
   assert result.exit_code == 1
   assert "unknown" in result.output
   assert not out.exists()
+
+
+def test_plot_dependency_error_names_install_extra(inputs, monkeypatch):
+  *_, out, args = inputs
+  # Exercise the lazy import even when another plotting test has already run.
+  monkeypatch.delitem(sys.modules, "triplet_coevolution.reporting.plots", raising=False)
+  class MissingMatplotlib:
+    def find_spec(self, fullname, path, target=None):
+      if fullname == "matplotlib":
+        raise ModuleNotFoundError("No module named 'matplotlib'", name=fullname)
+  monkeypatch.delitem(sys.modules, "matplotlib", raising=False)
+  monkeypatch.delitem(sys.modules, "matplotlib.pyplot", raising=False)
+  monkeypatch.setattr(sys, "meta_path", [MissingMatplotlib(), *sys.meta_path])
+  result = runner.invoke(app, args + ["--plots"])
+  assert result.exit_code == 1
+  assert "--plots requires Matplotlib" in result.output
+  assert ".[plots]" in result.output
+  assert not out.exists()
+
+
+def test_rerun_preserves_prior_results(inputs):
+  *_, out, args = inputs
+  assert runner.invoke(app, args).exit_code == 0
+  previous = {path.name: path.read_bytes() for path in out.iterdir()}
+  result = runner.invoke(app, args + ["--fmt", "csv"])
+  assert result.exit_code == 1
+  assert "new --out" in result.output
+  assert {path.name: path.read_bytes() for path in out.iterdir()} == previous
+
+
+@pytest.mark.parametrize("target", ["input_file", "input_directory", "existing_output_file"])
+def test_output_collision_preserves_user_files(inputs, target):
+  a, _, _, matches, out, args = inputs
+  if target == "existing_output_file":
+    out.mkdir()
+    matches = matches.rename(out / "mi_ab.tsv")
+    args[args.index("--matches") + 1] = str(matches)
+  else:
+    args[args.index("--out") + 1] = str(a if target == "input_file" else a.parent)
+  before = {path: path.read_bytes() for path in a.parent.rglob("*") if path.is_file()}
+  result = runner.invoke(app, args)
+  assert result.exit_code == 1
+  assert {path: path.read_bytes() for path in a.parent.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("already_exists", [True, False])
+def test_write_failure_rolls_back_run(inputs, monkeypatch, already_exists):
+  *_, out, args = inputs
+  if already_exists:
+    out.mkdir()
+  def fail_mid_publish(source, dest):
+    dest.write(source.read(20))
+    if dest.name.endswith("mi_ac.tsv"):
+      raise OSError("simulated disk full")
+  monkeypatch.setattr("triplet_coevolution.cli.shutil.copyfileobj", fail_mid_publish)
+  result = runner.invoke(app, args)
+  assert result.exit_code == 1
+  assert "simulated disk full" in result.output
+  if already_exists:
+    assert list(out.iterdir()) == []
+  else:
+    assert not out.exists()

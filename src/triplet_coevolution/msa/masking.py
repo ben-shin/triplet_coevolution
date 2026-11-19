@@ -65,14 +65,13 @@ def column_mask(
     ):
       raise ValueError(f"{name} must be between 0 and 1")
 
-  if min_entropy_bits is not None:
-    if (
-      isinstance(min_entropy_bits, (bool, np.bool_))
-      or not isinstance(min_entropy_bits, (int, float, np.integer, np.floating))
-      or not np.isfinite(min_entropy_bits)
-      or min_entropy_bits < 0
-    ):
-      raise ValueError("min_entropy_bits must be finite and nonnegative")
+  if min_entropy_bits is not None and (
+    isinstance(min_entropy_bits, (bool, np.bool_))
+    or not isinstance(min_entropy_bits, (int, float, np.integer, np.floating))
+    or not np.isfinite(min_entropy_bits)
+    or min_entropy_bits < 0
+  ):
+    raise ValueError("min_entropy_bits must be finite and nonnegative")
 
   # exclude incomplete cols but retain conserved cols by default
   keep = (

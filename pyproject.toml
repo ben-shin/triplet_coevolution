@@ -4,15 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "triplet-coevolution"
-version = "0.1.0"
-description = "three component mixed alphabet evolutionary coupling analysis"
+dynamic = ["version"]
+description = "Pairwise mutual information across three matched protein or nucleotide alignments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26,<3",
   "biopython>=1.86,<2",
-  "PyYAML>=6,<7",
-  "typer>=0.12,<1",
+  "typer>=0.26,<1",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +20,9 @@ plots = ["matplotlib>=3.8,<4"]
 
 [project.scripts]
 triplet = "triplet_coevolution.cli:app"
+
+[tool.setuptools.dynamic]
+version = {attr = "triplet_coevolution.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -5,8 +5,8 @@ import pytest
 from triplet_coevolution.core.alignment import ComponentMSA
 from triplet_coevolution.core.coordinates import (
   ReferenceCoordinates,
-  reference_positions,
   build_reference_map,
+  reference_positions,
   subset_reference_map,
 )
 from triplet_coevolution.msa.masking import apply_mask

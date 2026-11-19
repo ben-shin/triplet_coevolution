@@ -1,8 +1,9 @@
 # read aligned fasta and stockholm files into ComponentMSA objs
 
+from io import TextIOWrapper
 from pathlib import Path
 
-from Bio import SeqIO
+from Bio import AlignIO, SeqIO
 
 from triplet_coevolution.core.alignment import ComponentMSA
 from triplet_coevolution.core.alphabets import MoleculeType
@@ -19,6 +20,13 @@ FILE_FORMATS = {
   ".sth": "stockholm",
   ".stockholm": "stockholm",
 }
+
+
+class _StockholmStream(TextIOWrapper):
+  """Normalize legal tab separators for Biopython's space-delimited parser."""
+
+  def readline(self, size: int = -1) -> str:
+    return super().readline(size).replace("\t", " ")
 
 
 def read_msa(
@@ -43,17 +51,24 @@ def read_msa(
 
   if fmt is None or fmt.lower() not in {"fasta", "stockholm"}:
     raise ValueError(
-      f"unsupported alignment format for {path};"
-      "use .fasta or .sto or specify fmt='fasta'/'stockholm"
+      f"unsupported alignment format for {path}. "
+      "Use .fasta or .sto, or specify fmt='fasta' or 'stockholm'."
     )
 
   fmt = fmt.lower()
 
   # read all seqs w/ biopython
   try:
-    with path.open("r", encoding="utf-8") as handle:
-      records = list(SeqIO.parse(handle, fmt))
-
+    if fmt == "stockholm":
+      # Require one alignment, including any interleaved blocks within it.
+      with _StockholmStream(path.open("rb"), encoding="utf-8-sig") as handle:
+        records = AlignIO.read(handle, fmt)
+    else:
+      with path.open("r", encoding="utf-8-sig") as handle:
+        records = list(SeqIO.parse(handle, fmt))
+  except AssertionError as exc:
+    # Biopython uses assertions for some malformed Stockholm records.
+    raise ValueError(f"malformed {fmt} alignment {path}: invalid record structure") from exc
   except ValueError as exc:
     raise ValueError(
       f"could not parse {fmt} alignment {path}: {exc}"

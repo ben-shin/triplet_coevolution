@@ -10,7 +10,6 @@ import numpy as np
 from triplet_coevolution.core.coordinates import ReferenceCoordinates
 from triplet_coevolution.inference.mi import MIBlock, TripletMI
 
-
 FIELDS = (
   "rank",
   "pair",

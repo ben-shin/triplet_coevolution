@@ -7,8 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.figure import Figure
 
 from triplet_coevolution.core.coordinates import ReferenceCoordinates
 from triplet_coevolution.inference.mi import MIBlock, TripletMI
@@ -144,7 +144,7 @@ def _draw_block(
   ax.set_title(f"{block.component_x}{block.component_y} {score}")
 
   if not np.isfinite(data).any():
-    ax.text(0.5, 0.5, "no valid scores", ha="center", va="center", transform=ax.transAxes)
+    ax.text(0.5, 0.5, "no valid scores", color="white", ha="center", va="center", transform=ax.transAxes)
 
   return image
 

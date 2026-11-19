@@ -1,7 +1,9 @@
 # alphabet definitions and numerical sequence encoding
 
 from enum import Enum
+
 import numpy as np
+
 
 class MoleculeType(str, Enum):
   PROTEIN = "protein"

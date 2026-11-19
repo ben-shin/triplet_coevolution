@@ -4,11 +4,12 @@
 from dataclasses import replace
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as to_hex
 import numpy as np
 import pytest
+from matplotlib.colors import to_hex
 
 from triplet_coevolution.core.alignment import (
   ComponentMSA,

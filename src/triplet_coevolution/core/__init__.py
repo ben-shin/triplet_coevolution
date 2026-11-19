@@ -1,45 +1,43 @@
 
 # core sequence and alignment data structures
 
+from .alignment import (
+  ComponentMSA,
+  MatchedTripletMSA,
+  TripletMatch,
+)
 from .alphabets import (
-  MoleculeType,
-  CANONICAL,
   AMBIGUOUS,
+  CANONICAL,
   GAPS,
   MISSING,
   UNKNOWN_CODE,
+  MoleculeType,
   encode_sequence,
 )
-
-from .alignment import (
-  ComponentMSA,
-  TripletMatch,
-  MatchedTripletMSA,
-)
-
 from .coordinates import (
-  SiteCoordinate,
   ReferenceCoordinates,
-  reference_positions,
+  SiteCoordinate,
   build_reference_map,
+  reference_positions,
   subset_reference_map,
 )
 
 # public objects available from triplet_coevolution.core
 __all__ = [
-  "MoleculeType",
-  "CANONICAL",
   "AMBIGUOUS",
+  "CANONICAL",
   "GAPS",
   "MISSING",
   "UNKNOWN_CODE",
-  "encode_sequence",
   "ComponentMSA",
-  "TripletMatch",
   "MatchedTripletMSA",
-  "SiteCoordinate",
+  "MoleculeType",
   "ReferenceCoordinates",
-  "reference_positions",
+  "SiteCoordinate",
+  "TripletMatch",
   "build_reference_map",
+  "encode_sequence",
+  "reference_positions",
   "subset_reference_map",
 ]

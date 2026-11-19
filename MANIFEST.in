@@ -1,0 +1,2 @@
+include setup_local.sh
+recursive-include examples/mixed *.fasta *.tsv

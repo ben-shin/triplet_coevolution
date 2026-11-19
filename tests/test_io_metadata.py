@@ -98,7 +98,8 @@ def test_bom_and_whitespace(tmp_path, matches):
   path.write_text(
     "\ufeff observation_id \t a_id \t b_id \t c_id \n"
     " obs1 \t a1 \t b1 \t c1 \n"
-    " obs2 \t a2 \t b2 \t c2 \n"
+    " obs2 \t a2 \t b2 \t c2 \n",
+    encoding="utf-8",
   )
 
   assert read_triplet_map(path) == matches
@@ -242,6 +243,17 @@ def test_invalid_field_count(tmp_path, row):
     read_triplet_map(path)
 
 
+def test_unterminated_quote_cannot_consume_an_observation(tmp_path):
+  path = tmp_path / "matches.csv"
+  path.write_text(
+    "observation_id,a_id,b_id,c_id,note\n"
+    'obs1,a1,b1,c1,"curated\n'
+    "obs2,a2,b2,c2,curated\n"
+  )
+  with pytest.raises(ValueError, match="malformed triplet table"):
+    read_triplet_table(path)
+
+
 # reject blank values in any required field
 @pytest.mark.parametrize("field", REQUIRED_COLUMNS)
 def test_missing_required_values(tmp_path, field):
@@ -322,6 +334,8 @@ def test_invalid_match_records(records, error_type):
     ("taxon_id", "taxon_id"),
     ("a_id",),
     ("",),
+    (" a_id ",),
+    (1,),
   ],
 )
 def test_invalid_optional_columns(matches, columns):

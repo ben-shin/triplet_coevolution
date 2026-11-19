@@ -60,6 +60,29 @@ def test_inclusive_identity_threshold():
   np.testing.assert_array_equal(strict.neighbor_counts, [1, 1])
 
 
+def test_decimal_overlap_boundary():
+  sequence = "A" * 14 + "-" * 86
+  msa = ComponentMSA("A", "dna", ("x", "y"), (sequence, sequence))
+  assert sequence_weights(msa, min_overlap=0.14).n_eff == 1
+  assert sequence_weights(msa, min_overlap=np.nextafter(0.14, 1.0)).n_eff == 2
+
+
+def test_mean_component_identity_boundary():
+  ids = ("x", "y")
+  matches = tuple(TripletMatch(s, s, s, s) for s in ids)
+  a = ComponentMSA("A", "dna", ids, ("A" * 10, "A" * 7 + "C" * 3))
+  b = ComponentMSA("B", "dna", ids, ("A" * 10, "A" * 7 + "C" * 3))
+  c = ComponentMSA("C", "dna", ids, ("A" * 10, "A" * 10))
+  msa = MatchedTripletMSA(a, b, c, matches)
+  assert sequence_weights(msa, identity_threshold=0.8).n_eff == 1
+  assert sequence_weights(msa, identity_threshold=np.nextafter(0.8, 1.0)).n_eff == 2
+
+
+def test_no_shared_positions_even_with_zero_thresholds():
+  msa = ComponentMSA("A", "dna", ("x", "y"), ("A-", "-A"))
+  assert sequence_weights(msa, min_overlap=0, identity_threshold=0).n_eff == 2
+
+
 # all gap positions must not inflate sequence similarity
 def test_gaps_not_counted_as_matches():
   msa = ComponentMSA("A", "protein", ("a1", "a2"), ("A---", "C---"))

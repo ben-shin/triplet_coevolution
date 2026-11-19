@@ -10,6 +10,7 @@ from triplet_coevolution.core.alphabets import (
   encode_sequence,
 )
 
+
 @dataclass(frozen=True)
 class ComponentMSA:
   """1 rectangular single molecule type alignment, sequence ids must be unique
@@ -46,7 +47,7 @@ class ComponentMSA:
 
     if len(set(ids)) != len(ids):
       raise ValueError(
-        f"duplicate sequence ids in component (self.name)"
+        f"duplicate sequence IDs in component {self.name}"
       )
 
     if any(not isinstance(seq, str) for seq in sequences):
@@ -58,7 +59,7 @@ class ComponentMSA:
 
     if len(lengths) != 1 or 0 in lengths:
       raise ValueError(
-        f"component {self.name} can't be an empty rectangular msa"
+        f"component {self.name} sequences must have equal, nonzero lengths"
       )
 
     for seq_id, seq in zip(ids, sequences):

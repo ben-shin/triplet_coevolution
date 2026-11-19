@@ -9,12 +9,12 @@ from triplet_coevolution.core.alignment import (
   MatchedTripletMSA,
   TripletMatch,
 )
-from triplet_coevolution.msa.qc import component_qc
 from triplet_coevolution.msa.masking import (
-  column_mask,
   apply_mask,
   apply_triplet_masks,
+  column_mask,
 )
+from triplet_coevolution.msa.qc import component_qc
 
 
 # fixed, variable, all gap, and all missing prot cols

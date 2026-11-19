@@ -77,14 +77,14 @@ class TripletTable:
 
     _validate_matches(matches)
 
-    if len(set(extra_columns)) != len(extra_columns):
-      raise ValueError("duplicate optional metadata column")
-
     if any(
-      not x or x in REQUIRED_COLUMNS
-      for x in extra_columns
+      not isinstance(column, str) or not column or column != column.strip()
+      or column in REQUIRED_COLUMNS for column in extra_columns
     ):
       raise ValueError("invalid optional metadata column")
+
+    if len(set(extra_columns)) != len(extra_columns):
+      raise ValueError("duplicate optional metadata column")
 
     if not annotations:
       annotations = tuple({} for _ in matches)
@@ -122,7 +122,7 @@ def read_triplet_table(
   path: str | Path,
   delimiter: str | None = None,
 ) -> TripletTable:
-  """read csv/tsv matching table while preserving metadat
+  """Read a CSV or TSV matching table and preserve its metadata.
 
   requires observation_id, a_id, b_id, c_id and each seq id may appear once per component
   """
@@ -137,15 +137,19 @@ def read_triplet_table(
 
   delimiter = _delimiter_for(path, delimiter)
 
+  try:
+    return _read_delimited_table(path, delimiter)
+  except csv.Error as exc:
+    raise ValueError(f"malformed triplet table {path}: {exc}") from exc
+
+
+def _read_delimited_table(path: Path, delimiter: str) -> TripletTable:
   matches = []
   annotations = []
 
   # utf-8-sig also handles files containing a BOM
-  with path.open(
-    "r", encoding="utf-8-sig", newline=""
-  ) as handle:
-
-    reader = csv.DictReader(handle, delimiter=delimiter)
+  with path.open("r", encoding="utf-8-sig", newline="") as handle:
+    reader = csv.DictReader(handle, delimiter=delimiter, strict=True)
 
     if reader.fieldnames is None:
       raise ValueError(
