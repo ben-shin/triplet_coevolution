@@ -32,7 +32,9 @@ Run the bundled example from the repository root with the environment active. Ea
 triplet run --config examples/workflow/run.json --out results/full
 ```
 
-The run searches the example databases, retrieves candidates, builds alignments, uses the supplied evidence to select partners, filters and weights the matched observations, then scores and benchmarks the result. Open `results/full/analysis/report.html` to inspect search hits, excluded groups, alignment QC, site rankings and benchmarks. The example retains 8 observation groups and tests 32 of 800 eligible site triples. Its contact labels are synthetic. Choose a **new or empty output directory** for every run.
+The run searches the example databases, retrieves candidates, builds alignments, uses the supplied evidence to select partners, filters and weights the matched observations, then scores and benchmarks the result. Open `results/full/analysis/report.html` to inspect search hits, excluded groups, alignment QC, site rankings and benchmarks. Choose a **new or empty output directory** for every run.
+
+The synthetic example retains eight observations and fits all 800 eligible site triples. Two triples tie for first in the local Potts ranking. At reference positions **A2/B5/C3** and **A4/B2/C3**, the raw MI of each constituent pair is zero and the signed co-information is −1 bit. In these constructed observations, the combination of the first two sites determines the state of the third. With 19 permutations, the first triple has an empirical p-value of 0.05 and a BH-adjusted value of 1 across the 800 tested triples. The four contact labels are also synthetic.
 
 If you already have unpaired alignments, start at the pairing step.
 
@@ -40,7 +42,7 @@ If you already have unpaired alignments, start at the pairing step.
 triplet prepare --config examples/workflow/prepare.json --out results/prepared
 ```
 
-Review `results/prepared/matching_qc.json` and `matches.tsv` before scoring. For the bundled configuration, the prepared alignments connect directly to the analysis command.
+Review `results/prepared/matching_qc.json` and `matches.tsv` before scoring. The prepared directory includes `analyze_args.json` with the reference IDs, coordinate rows and arguments for replaying the handoff. For the bundled configuration, the prepared alignments connect directly to the analysis command.
 
 ```shell
 triplet analyze --a results/prepared/A.fasta --b results/prepared/B.fasta --c results/prepared/C.fasta --matches results/prepared/matches.tsv --a-ref prot_ref --b-ref dna_ref --c-ref rna_ref --b-type dna --c-type rna --dca --threebody --out results/from-prepared
@@ -71,7 +73,7 @@ The match table is a UTF-8 TSV or CSV file with the following four required colu
 | obs01 | prot01 | dna01 | rna01 |
 | obs02 | prot02 | dna02 | rna02 |
 
-Each observation and each component ID must occur once in its respective column. Sequence IDs must occur in the corresponding alignment. Supply curated matches for homologs you intend to compare. Unlisted sequences are excluded from scoring. Each `--*-ref` identifies an alignment sequence for coordinate reporting and may be outside the match table.
+Each observation and each component ID must occur once in its respective column. Sequence IDs must occur in the corresponding alignment. Supply curated matches for homologs you intend to compare. Unlisted sequences are excluded from scoring. Each `--*-ref` identifies the biological reference used in reported coordinates and contact labels. By default the alignment contains a row with that ID. If a full coordinate row has a different ID, supply `--a-ref-row`, `--b-ref-row` or `--c-ref-row`. A matched, trimmed hit can then retain its original identifier while the full reference defines the coordinates.
 
 ## Read the results
 

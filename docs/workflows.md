@@ -13,6 +13,8 @@ triplet run --config examples/workflow/run.json --out results/full
 
 The full example includes eight matched groups, a lower-priority protein paralog and one group with missing candidates. One DNA record is on the reverse strand and one protein contains an insertion. The run enables DCA, local three-body analysis and 19 seeded permutations. Its four artificial contact labels exercise the benchmarking output. They have no physical interpretation. Open `results/full/analysis/report.html` for the results. To add PNG heatmaps, install the plotting extra and use `--plots` with a fresh output directory. `--no-plots` overrides a configuration that enables plots. [Run configuration](../examples/workflow/run.json) · [Prepare configuration](../examples/workflow/prepare.json) · [Evidence](../examples/workflow/evidence.tsv)
 
+The example evaluates all 800 ABC site triples. The synthetic association at A2, B5 and C3 ties for the highest three-body score and has co-information of −1 bit. Across the 800 tests its adjusted permutation q-value is 1.0.
+
 ## Configuration
 
 The configuration is UTF-8 JSON. Relative file paths are resolved from the directory containing the JSON file. Duplicate keys and unrecognized options raise errors. Give each alignment or database its own component entry named `A`, `B` or `C`.
@@ -38,7 +40,7 @@ Create one row per proposed component member from your genome or orthology evide
 | isolate01 | B | b01 | 2 | batch1 |
 | isolate01 | C | c01 | 2 | batch1 |
 
-Only `group_id`, `component` and `sequence_id` are required. Each component/sequence combination may occur once across the table. Other columns, apart from optional numeric `priority`, carry group-level annotations. They must agree across every row in the group. The output preserves these annotations, so a column such as `cohort` can be used with `analysis.strata_column`.
+Only `group_id`, `component` and `sequence_id` are required. Surrounding whitespace is trimmed from header names before checking for empty, duplicate and reserved names. Each component/sequence combination may occur once across the table. Other columns, apart from optional numeric `priority`, carry group-level annotations. They must agree across every row in the group. The output preserves these annotations, so a column such as `cohort` can be used with `analysis.strata_column`.
 
 1. Candidates qualify if their IDs occur in the input alignments for prepare or in the accepted search hits for run. The audit records unavailable candidates. Supplying a reference sequence for coordinates alone does not add it to the search hits.
 2. A group needs a selected member for A, B and C. The default policy excludes a group containing multiple available members in any component.
@@ -66,6 +68,8 @@ For multiple qualifying hits on one database record, the workflow selects the hi
 
 The workflow retrieves each selected interval by exact ID, orients it, and globally aligns it to the reference. Every reference position contributes one MSA column. A deletion appears as a gap. Target residues inserted between reference positions have no anchored column and are omitted from scoring. To study insertion columns, supply a precomputed alignment to `prepare` or `analyze`.
 
+If a selected interval shares the reference ID but covers only part of its sequence, that observation keeps its biological ID and contributes the selected interval. The full coordinate seed receives a separate, unique FASTA row ID. Tables and contacts continue to use the original biological reference ID. The matching QC records both identifiers. Standalone prepare accepts a component-level `reference_row_id` when an input alignment uses distinct coordinate and observation rows.
+
 ## Output files
 
 | Path in a full run | Contents |
@@ -73,8 +77,15 @@ The workflow retrieves each selected interval by exact ID, orients it, and globa
 | `search/{A,B,C}_hits.tsv` | Selected intervals, strands, scores and backend-specific evidence. |
 | `search/{A,B,C}.fasta` | All retrieved hits projected onto their component reference. |
 | `prepared/{A,B,C}.fasta`, `prepared/matches.tsv` | Inputs to `triplet analyze`, reusable with other scoring settings. |
+| `prepared/analyze_args.json` | CLI arguments for replay from the prepared directory, including coordinate row overrides and the selected analysis settings. |
 | `prepared/matching_qc.json` | Candidate-level audit and matched-row QC. |
 | `analysis/` | Ranked tables, optional validation and plots, network, HTML report and analysis manifest. |
-| `workflow_summary.json` | Package and Biopython versions, hashes of original input files, effective search settings, group totals and result paths. |
+| `workflow_summary.json` | Package and Biopython versions, hashes of original input files, external search executable names, paths and versions, effective search settings, group totals and result paths. |
 
 Standalone prepare writes the prepared alignments, match table, QC and workflow summary directly in `--out`. Inspect the QC before using incomplete or ambiguous datasets for analysis.
+
+To replay an analysis, open a shell in the directory containing `analyze_args.json` and run the following command. It writes to a new sibling directory called `analysis-replay`. Paths to external contact or candidate files are recorded as absolute paths.
+
+```shell
+python -c "import json, pathlib, subprocess; args = json.loads(pathlib.Path('analyze_args.json').read_text(encoding='utf-8')); subprocess.run(['triplet', *args, '--out', '../analysis-replay'], check=True)"
+```

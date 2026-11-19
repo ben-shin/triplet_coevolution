@@ -96,17 +96,18 @@ def retrieve(comp, reference):
     selected = {key: value[1] for key, value in best.items()}
     sequences = {}
     for seq_id, seq in read_sequences(comp["database"], comp["molecule"]):
-        if seq_id == comp["reference_id"] and seq != reference:
+        if (
+            seq_id == comp["reference_id"]
+            and seq != reference
+            and (comp["molecule"] == "protein" or oriented(seq, comp["molecule"], "-") != reference)
+        ):
             raise ValueError(f"database record {seq_id!r} conflicts with reference sequence")
         if seq_id in selected:
             hit = selected[seq_id]
             if hit.last > len(seq):
                 raise ValueError(f"search hit outside database record {seq_id!r}")
-            # The supplied full reference determines coordinates when it also appears in the database.
-            sequences[seq_id] = (
-                reference
-                if seq_id == comp["reference_id"]
-                else oriented(seq[hit.first - 1 : hit.last], comp["molecule"], hit.strand)
+            sequences[seq_id] = oriented(
+                seq[hit.first - 1 : hit.last], comp["molecule"], hit.strand
             )
     if set(sequences) != set(selected):
         raise ValueError("database changed during retrieval")

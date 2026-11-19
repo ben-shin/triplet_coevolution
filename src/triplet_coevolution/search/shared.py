@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ class Hit:
     model_strand: str | None = None
 
 
-def execute(args, cwd=None):
+def execute(args, cwd=None, *, capture_stdout=False):
     executable = shutil.which(args[0])
     if executable is None:
         raise ValueError(
@@ -30,7 +31,7 @@ def execute(args, cwd=None):
     result = subprocess.run(
         [executable, *(str(v) for v in args[1:])],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
@@ -46,6 +47,26 @@ def execute(args, cwd=None):
         raise ValueError(
             f"{args[0]} exited with {result.returncode}: {result.stderr.strip()[-1600:]}"
         )
+    return str(Path(executable).absolute()), result.stdout
+
+
+def program_versions(comp):
+    names = {
+        "reference": (),
+        "hmmer": ("hmmsearch" if comp["molecule"] == "protein" else "nhmmer",),
+        "infernal": ("cmsearch",),
+        "psiblast": ("makeblastdb", "psiblast"),
+    }[comp["backend"]]
+    programs = []
+    for name in names:
+        is_blast = name in ("psiblast", "makeblastdb")
+        path, banner = execute([name, "-version" if is_blast else "-h"], capture_stdout=True)
+        prefix = f"{name}:" if is_blast else (r"# INFERNAL" if name == "cmsearch" else r"# HMMER")
+        match = re.search(rf"^{prefix}\s+(\S+)", banner, flags=re.MULTILINE)
+        if match is None:
+            raise ValueError(f"could not identify {name} version from its banner: {path}")
+        programs.append({"name": name, "path": path, "version": match.group(1)})
+    return programs
 
 
 def table_rows(path: Path):

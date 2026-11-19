@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from triplet_coevolution.cli import app
 from triplet_coevolution.config import load_config
 from triplet_coevolution.io.alignments import read_msa
+from triplet_coevolution.io.metadata import read_triplet_table
 from triplet_coevolution.matching.orthology import read_evidence
 from triplet_coevolution.matching.triplets import match_groups
 from triplet_coevolution.msa.builders import anchored_msa
@@ -94,6 +95,10 @@ def test_run_example_full_outputs_and_published_provenance(tmp_path):
         path = Path(analysis["inputs"][name]["path"])
         assert path.parent == out / "prepared" and path.is_file()
     assert analysis["matched_observations"] == 8 and not analysis["settings"]["plots"]
+    assert analysis["advanced"]["candidates"]["tested"] == 800
+    top = _rows(out / "analysis" / "threebody_abc.tsv")[0]
+    assert [top[f"{c}_original_col"] for c in "abc"] == ["2", "5", "3"]
+    assert float(top["co_information_bits"]) == pytest.approx(-1)
     hits = {r["seq_id"]: r for r in _rows(out / "search" / "B_hits.tsv")}
     assert hits["dna03"]["strand"] == "-"
     qc = _json(out / workflow["matching_qc"])
@@ -150,6 +155,63 @@ def test_anchored_insertions_and_deletions():
     ref = "ACDEFGH"
     msa = anchored_msa("A", "protein", "ref", ref, {"insert": "ACDKEFGH", "delete": "ACEFGH"})
     assert dict(zip(msa.ids, msa.sequences)) == {"ref": ref, "insert": ref, "delete": "AC-EFGH"}
+
+
+def test_distinct_coordinate_row_for_partial_same_id_hit():
+    msa = anchored_msa("A", "protein", "ref", "MACDEG", {"ref": "ACDE", "ref.coordinate": "ACDE"})
+    assert dict(zip(msa.ids, msa.sequences)) == {
+        "ref.coordinate.1": "MACDEG",
+        "ref": "-ACDE-",
+        "ref.coordinate": "-ACDE-",
+    }
+
+
+@pytest.mark.parametrize("additional", [" a_id ", "clade\t clade ", " "])
+def test_prepare_rejects_colliding_normalized_headers(tmp_path, additional):
+    cfg = load_config(EXAMPLE / "prepare.json", "prepare")
+    evidence = tmp_path / "evidence.tsv"
+    cfg["evidence"] = str(evidence)
+    evidence.write_text("group_id\tcomponent\tsequence_id\t" + additional + "\n", encoding="utf-8")
+    path = tmp_path / "prepare.json"
+    path.write_text(json.dumps(cfg, default=str), encoding="utf-8")
+    result = runner.invoke(app, ["prepare", "--config", str(path), "--out", str(tmp_path / "out")])
+    assert result.exit_code == 1 and "error:" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_padded_header_round_trip(tmp_path):
+    cfg = load_config(EXAMPLE / "prepare.json", "prepare")
+    evidence = tmp_path / "evidence.tsv"
+    cfg["evidence"] = str(evidence)
+    evidence.write_text(
+        " group_id \tcomponent \t sequence_id\t cohort \n"
+        "obs\tA\tprot01\tdemo\nobs\tB\tdna01\tdemo\nobs\tC\trna01\tdemo\n",
+        encoding="utf-8",
+    )
+    path = tmp_path / "prepare.json"
+    path.write_text(json.dumps(cfg, default=str), encoding="utf-8")
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["prepare", "--config", str(path), "--out", str(out)])
+    assert result.exit_code == 0, result.output
+    table = read_triplet_table(out / "matches.tsv")
+    assert table.extra_columns == ("cohort",)
+    assert table.annotations == ({"cohort": "demo"},)
+
+
+def test_profile_missing_alphabet_field_value(tmp_path):
+    shutil.copytree(EXAMPLE, tmp_path / "w")
+    path = tmp_path / "w" / "run.json"
+    cfg = _json(path)
+    a = cfg["components"]["A"]
+    a.update(backend="hmmer", profile="broken.hmm")
+    del a["min_coverage"], a["min_identity"]
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    (path.parent / "broken.hmm").write_text("HMMER3/f\nALPH    \n//\n", encoding="ascii")
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["run", "--config", str(path), "--out", str(out)])
+    assert result.exit_code == 1
+    assert "broken.hmm" in result.output and "ALPH" in result.output
+    assert not out.exists()
 
 
 def test_reference_retrieval_boundaries_and_orientation(tmp_path):

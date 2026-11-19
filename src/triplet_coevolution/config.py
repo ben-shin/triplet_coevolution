@@ -87,6 +87,8 @@ def load_config(path: Path, mode: str) -> dict:
             {"alignment"} if mode == "prepare" else {"reference", "database"}
         )
         optional = {"reference_start"}
+        if mode == "prepare":
+            optional.add("reference_row_id")
         if mode == "run":
             optional |= {
                 "backend",
@@ -103,6 +105,8 @@ def load_config(path: Path, mode: str) -> dict:
         if comp["molecule"] not in ("protein", "dna", "rna"):
             raise ValueError(f"{name}.molecule must be protein, dna, or rna")
         _typed(comp["reference_id"], str, f"{name}.reference_id", base)
+        if "reference_row_id" in comp:
+            _typed(comp["reference_row_id"], str, f"{name}.reference_row_id", base)
         start = comp.setdefault("reference_start", 1)
         if type(start) is not int or start < 1:
             raise ValueError(f"{name}.reference_start must be a positive integer")

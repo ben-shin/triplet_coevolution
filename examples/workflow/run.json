@@ -34,7 +34,6 @@
   "analysis": {
     "dca": true,
     "threebody": true,
-    "max_triplets": 32,
     "permutations": 19,
     "seed": 7,
     "contacts": "synthetic_labels.tsv"

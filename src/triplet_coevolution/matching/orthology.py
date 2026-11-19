@@ -23,9 +23,10 @@ def read_evidence(path: Path):
     required = {"group_id", "component", "sequence_id"}
     with path.open(encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter, strict=True)
-        fields = reader.fieldnames or []
-        if len(set(fields)) != len(fields) or not required <= set(fields):
+        fields = [name.strip() for name in reader.fieldnames or []]
+        if not all(fields) or len(set(fields)) != len(fields) or not required <= set(fields):
             raise ValueError("evidence requires unique columns group_id, component, sequence_id")
+        reader.fieldnames = fields
         extras = tuple(name for name in fields if name not in required | {"priority"})
         if any(
             not name.strip() or name in {"observation_id", "a_id", "b_id", "c_id"}

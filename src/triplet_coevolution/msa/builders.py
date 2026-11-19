@@ -39,12 +39,19 @@ def comparison(reference, target, molecule, mode):
 
 def anchored_msa(name, molecule, ref_id, reference, hits):
     """Keep every reference column. Omit unanchored insertions from the reference projection."""
-    ids = [ref_id]
+    # A database record and the coordinate seed sometimes share a biological ID
+    # but contribute different aligned rows (for example, a partial profile hit).
+    ref_row = ref_id
+    if ref_id in hits and hits[ref_id] != reference:
+        ref_row = f"{ref_id}.coordinate"
+        suffix = 1
+        while ref_row in hits:
+            ref_row = f"{ref_id}.coordinate.{suffix}"
+            suffix += 1
+    ids = [ref_row]
     rows = [reference]
     for seq_id, sequence in sorted(hits.items()):
-        if seq_id == ref_id:
-            if sequence != reference:
-                raise ValueError(f"{name}: database hit conflicts with reference ID {ref_id!r}")
+        if seq_id == ref_row:
             continue
         alignment = comparison(reference, sequence, molecule, "global")
         row = ["-"] * len(reference)

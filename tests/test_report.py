@@ -95,8 +95,37 @@ def test_advanced_models_benchmarks_and_factor_network(tmp_path):
                  "permutation_mi", "contacts"):
         artifact = summary["advanced"]["outputs"][stem]["path"]
         assert (out / artifact).is_file() and artifact in html
-    for phrase in ("AUROC", "Candidate coverage", "threebody_rms", "BH q", "dca_frobenius"):
+    for phrase in ("AUROC", "Candidate coverage", "threebody_rms", "BH q",
+                   "dca_frobenius", "Co-information (bits)", "AB MI (bits)"):
         assert phrase in html
     assert summary["advanced"]["settings"]["strata_column"] == "clade"
     assert summary["outputs"]["network"]["triplet_nodes"] == 1
     assert (out / "network.graphml").read_text(encoding="utf-8").count(">membership<") == 3
+
+
+def test_coordinate_row_and_trimmed_observation_keep_distinct_roles(tmp_path):
+    base = Path(__file__).resolve().parents[1] / "examples" / "mixed"
+    a = tmp_path / "a.fasta"
+    a.write_text((base / "protein.fasta").read_text().replace("prot_ref", "coordinate_only")
+                 .replace(">prot01\nA-KLT", ">prot01\n--KLT"), encoding="utf-8")
+    out = tmp_path / "report"
+    contacts = tmp_path / "labels.tsv"
+    contacts.write_text(
+        "x_component\tx_reference_id\tx_reference_pos\ty_component\ty_reference_id\t"
+        "y_reference_pos\tcontact\nA\tprot01\t101\tB\tdna_ref\t1\t1\n"
+    )
+    result = CliRunner().invoke(app, [
+        *demo_args(out, a=a, ref="prot01"), "--a-ref-row", "coordinate_only", "--a-start", "101",
+        "--contacts", str(contacts),
+    ])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    comp = summary["components"]["A"]
+    assert (comp["reference_id"], comp["reference_row_id"]) == ("prot01", "coordinate_only")
+    with (out / "mi_ab.tsv").open(encoding="utf-8", newline="") as handle:
+        rows = [r for r in csv.DictReader(handle, delimiter="\t") if r["x_original_col"] == "1"]
+    assert len(rows) == 4
+    assert all((r["x_reference_id"], r["x_reference_pos"], r["n_valid"]) == ("prot01", "101", "7")
+               for r in rows)
+    labels = json.loads((out / "contacts.json").read_text())
+    assert labels["methods"]["mi"]["scored"] == 1

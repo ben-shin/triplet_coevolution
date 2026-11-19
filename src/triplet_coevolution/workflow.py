@@ -23,6 +23,7 @@ from triplet_coevolution.matching.triplets import match_groups
 from triplet_coevolution.msa.builders import anchored_msa
 from triplet_coevolution.msa.qc import component_qc
 from triplet_coevolution.search.retrieve import retrieve
+from triplet_coevolution.search.shared import program_versions
 
 ConfigOption = Annotated[
     Path, typer.Option("--config", help="Workflow JSON. Input paths are relative to its directory.")
@@ -67,7 +68,7 @@ def _provenance(paths):
     return result
 
 
-def _write_prepared(directory, components, cfg, available):
+def _write_prepared(directory, components, cfg, available, coordinate_rows):
     directory.mkdir(exist_ok=True)
     groups, metadata, extra = read_evidence(cfg["evidence"])
     matches, qc = match_groups(available, groups, cfg["paralogs"])
@@ -82,13 +83,15 @@ def _write_prepared(directory, components, cfg, available):
         comp = cfg["components"][name]
         ref = comp["reference_id"]
         msa = components[name]
-        build_reference_map(msa, ref, comp["reference_start"])
+        ref_row = coordinate_rows[name]
+        build_reference_map(msa, ref, comp["reference_start"], row_id=ref_row)
         ids = [getattr(row, f"{name.lower()}_id") for row in matches]
-        selected = msa.take_ids(ids if ref in ids else [ref, *ids])
+        selected = msa.take_ids(ids if ref_row in ids else [ref_row, *ids])
         stats = component_qc(msa.take_ids(ids)) if ids else None
         _write_fasta(directory / f"{name}.fasta", selected)
         qc["alignments"][name] = {
             "reference_id": ref,
+            "reference_row_id": ref_row,
             "reference_start": comp["reference_start"],
             "molecule": comp["molecule"],
             "sites": msa.n_sites,
@@ -107,10 +110,12 @@ def _run_searches(stage, cfg):
     search_dir.mkdir()
     components = {}
     available = {}
+    programs = {}
     for name in COMPONENTS:
         comp = cfg["components"][name]
         reference = read_reference(comp)
         hits, seqs = retrieve(comp, reference)
+        programs[name] = program_versions(comp)
         with (search_dir / f"{name}_hits.tsv").open("w", encoding="utf-8", newline="") as handle:
             fields = (
                 "seq_id",
@@ -131,14 +136,11 @@ def _run_searches(stage, cfg):
         )
         _write_fasta(search_dir / f"{name}.fasta", components[name])
         available[name] = set(hits)
-    return components, available
+    return components, available, programs
 
 
-def _analyze(stage, out, cfg):
-    from triplet_coevolution.cli import analyze
-
-    prepared = stage / "prepared"
-    kwargs = {"matches": prepared / "matches.tsv", "out": stage / "analysis"}
+def _analysis_inputs(prepared, cfg, coordinate_rows):
+    kwargs = {"matches": prepared / "matches.tsv"}
     for name in COMPONENTS:
         comp = cfg["components"][name]
         key = name.lower()
@@ -150,8 +152,30 @@ def _analyze(stage, out, cfg):
                 f"{key}_start": comp["reference_start"],
             }
         )
+        if coordinate_rows[name] != comp["reference_id"]:
+            kwargs[f"{key}_ref_row"] = coordinate_rows[name]
+    return {**kwargs, **cfg.get("analysis", {})}
+
+
+def _write_analysis_args(prepared, kwargs):
+    """Record native CLI arguments for replay from the prepared directory."""
+    args = ["analyze"]
+    for key, value in kwargs.items():
+        option = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                args.append(option)
+        else:
+            arg = value.name if key in ("a", "b", "c", "matches") else str(value)
+            args.extend([option, arg])
+    _write_json(prepared / "analyze_args.json", args)
+
+
+def _analyze(stage, out, kwargs):
+    from triplet_coevolution.cli import analyze
+
     with redirect_stdout(StringIO()):
-        analyze(**kwargs, **cfg["analysis"])
+        analyze(**kwargs, out=stage / "analysis")
     # The outer publication moves these four generated inputs from staging to their final location.
     path = stage / "analysis" / "run_summary.json"
     summary = json.loads(path.read_text(encoding="utf-8"))
@@ -177,7 +201,8 @@ def _workflow(config, out, mode, plots=None):
         raise ValueError("configuration changed while reading")
     with _stage_run(out) as stage:
         if mode == "run":
-            components, available = _run_searches(stage, cfg)
+            components, available, programs = _run_searches(stage, cfg)
+            coordinate_rows = {name: msa.ids[0] for name, msa in components.items()}
             prepared = stage / "prepared"
         else:
             components = {
@@ -185,8 +210,17 @@ def _workflow(config, out, mode, plots=None):
                 for name, comp in cfg["components"].items()
             }
             available = {name: set(msa.ids) for name, msa in components.items()}
+            coordinate_rows = {
+                name: comp.get("reference_row_id", comp["reference_id"])
+                for name, comp in cfg["components"].items()
+            }
+            for name, row_id in coordinate_rows.items():
+                if row_id != cfg["components"][name]["reference_id"]:
+                    available[name].discard(row_id)
             prepared = stage
-        qc = _write_prepared(prepared, components, cfg, available)
+        qc = _write_prepared(prepared, components, cfg, available, coordinate_rows)
+        analysis_args = _analysis_inputs(prepared, cfg, coordinate_rows)
+        _write_analysis_args(prepared, analysis_args)
         summary = {
             "schema_version": 1,
             "software_version": __version__,
@@ -198,6 +232,7 @@ def _workflow(config, out, mode, plots=None):
             "excluded_groups": qc["excluded_groups"],
             "prepared": prepared.relative_to(stage).as_posix(),
             "matching_qc": (prepared / "matching_qc.json").relative_to(stage).as_posix(),
+            "analyze_args": (prepared / "analyze_args.json").relative_to(stage).as_posix(),
         }
         if mode == "run":
             if not qc["ready_for_analysis"]:
@@ -207,11 +242,12 @@ def _workflow(config, out, mode, plots=None):
                 raise ValueError(
                     f"no complete unambiguous triplets after search and matching ({detail})"
                 )
-            _analyze(stage, out, cfg)
+            _analyze(stage, out, analysis_args)
             summary["search"] = {
                 name: {
                     **{k: v for k, v in cfg["components"][name].items() if not isinstance(v, Path)},
                     "hits": len(available[name]),
+                    "executables": programs[name],
                     "table": f"search/{name}_hits.tsv",
                 }
                 for name in COMPONENTS

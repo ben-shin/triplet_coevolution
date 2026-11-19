@@ -159,21 +159,25 @@ def build_reference_map(
   msa: ComponentMSA,
   reference_id: str,
   start: int = 1,
+  *,
+  row_id: str | None = None,
 ) -> ReferenceCoordinates:
-  """make col to ref mapping from unmasked component msa
-  choose ref explicitly; do not assume the first seq is ref
-  the ref can later be excluded during matched triplet selection
+  """Map alignment columns to a biological reference using its coordinate row.
+
+  A full reference and a matched, trimmed copy of the same record may have
+  different alignment rows. Output coordinates always carry the biological ID.
   """
 
   if not isinstance(msa, ComponentMSA):
     raise TypeError("build_reference_map expects a ComponentMSA")
 
-  if reference_id not in msa.ids:
+  coordinate_id = reference_id if row_id is None else row_id
+  if coordinate_id not in msa.ids:
     raise ValueError(
-      f"reference id {reference_id!r} not found in component {msa.name}"
+      f"reference id {coordinate_id!r} not found in component {msa.name}"
     )
 
-  reference = msa.sequences[msa.ids.index(reference_id)]
+  reference = msa.sequences[msa.ids.index(coordinate_id)]
 
   return ReferenceCoordinates(
     component=msa.name,

@@ -35,7 +35,8 @@ STYLE = """
  #e1e6e5}.canonical{background:#137e71}.gap{background:#d59a41}.missing{background:#7c729b}
  .legend{font-size:.87rem;display:flex;gap:1rem;flex-wrap:wrap}.legend i{display:inline-block;width:
  .72rem;height:.72rem;margin-right:.33rem}.audit-links{display:flex;gap:.35rem 1rem;
- flex-wrap:wrap;max-width:none}code{font-family:'IBM Plex Mono',Consolas,monospace;
+ flex-wrap:wrap;max-width:none}.scroll .triple th{white-space:normal}.scroll .triple
+ td:nth-child(-n+3){white-space:normal;min-width:7.2em}code{font-family:'IBM Plex Mono',Consolas,monospace;
  font-size:.9em;overflow-wrap:anywhere}footer{border-top:1px solid var(--rule);padding-top:1rem;
  color:var(--muted)}@media print{nav,details:not([open]){display:none}body{background:white}
  header{background:none;color:black;padding:1rem}header p{color:black}.scroll{overflow:visible}}
@@ -50,10 +51,11 @@ def _link(path: str, label: str) -> str:
     return f'<a href="{_text(quote(path, safe="/"))}">{_text(label)}</a>'
 
 
-def _table(headers, rows) -> str:
+def _table(headers, rows, *, triple=False) -> str:
     head = "".join(f'<th scope="col">{_text(label)}</th>' for label in headers)
     body = "".join("<tr>" + "".join(f"<td>{_text(v)}</td>" for v in row) + "</tr>" for row in rows)
-    return f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+    attr = ' class="triple"' if triple else ""
+    return f'<div class="scroll"><table{attr}><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
 def _site(row, prefix):
@@ -71,7 +73,26 @@ METHODS = {
 }
 
 
+def _triple_evidence(directory: Path, triples: list[dict], pair_tables: dict):
+    """Join the leading triples to the actual pairwise exports by original MSA columns."""
+    evidence = [[f'{float(row["co_information_bits"]):.5g}'] for row in triples]
+    for pair in ("AB", "AC", "BC"):
+        keys = [(row[f"{pair[0].lower()}_original_col"], row[f"{pair[1].lower()}_original_col"])
+                for row in triples]
+        scores = dict.fromkeys(keys, "Outside MI export")
+        path = directory / pair_tables[pair].path
+        with path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle, delimiter="," if path.suffix == ".csv" else "\t"):
+                key = (row["x_original_col"], row["y_original_col"])
+                if key in scores:
+                    scores[key] = f'{float(row["mi_bits"]):.5g}'
+        for result, key in zip(evidence, keys):
+            result.append(scores[key])
+    return evidence
+
+
 def _rankings(directory: Path, tables: list[RankedTable]) -> str:
+    pair_tables = {t.label: t for t in tables if t.method == "MI"}
     pieces = []
     for method, group in groupby(tables, key=lambda table: table.method):
         pieces.append(f'<div class="panel"><h3>{_text(method)}</h3><p>{METHODS[method]}</p>')
@@ -81,9 +102,13 @@ def _rankings(directory: Path, tables: list[RankedTable]) -> str:
             pieces.append(f"<details open><summary>{_text(title)}</summary>")
             if top:
                 headers = [*list(table.label), table.score, "Valid observations"]
-                rows = ([*[_site(row, k) for k in table.prefixes],
-                         f"{float(row[table.score]):.5g}", row["n_valid"]] for row in top)
-                pieces.append(_table(headers, rows))
+                rows = [[*[_site(row, k) for k in table.prefixes],
+                         f"{float(row[table.score]):.5g}", row["n_valid"]] for row in top]
+                if table.label == "ABC":
+                    headers += ["Co-information (bits)", "AB MI (bits)", "AC MI (bits)", "BC MI (bits)"]
+                    for row, extra in zip(rows, _triple_evidence(directory, top, pair_tables)):
+                        row.extend(extra)
+                pieces.append(_table(headers, rows, triple=table.label == "ABC"))
             else:
                 pieces.append("<p>No site combinations passed the selected filters.</p>")
             pieces.append(_link(table.path, f"Open full {method} {table.label} table") + "</details>")
@@ -154,6 +179,8 @@ def _workflow_section(workflow: dict, matching_qc: dict) -> str:
     paths = [("../workflow_summary.json", "Workflow manifest"),
              ("../" + workflow["matching_qc"], "Full matching audit"),
              ("../" + workflow["prepared"] + "/matches.tsv", "Prepared match table")]
+    if workflow.get("analyze_args"):
+        paths.append(("../" + workflow["analyze_args"], "Replay analysis arguments"))
     paths.extend(("../" + data["table"], f"{key} search hits")
                  for key, data in workflow["search"].items())
     links = "".join(_link(path, label) for path, label in paths)

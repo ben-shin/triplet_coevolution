@@ -250,6 +250,15 @@ def analyze(
     contacts: Annotated[
         Path | None, typer.Option("--contacts", help="Reference-coordinate contact labels TSV.")
     ] = None,
+    a_ref_row: Annotated[
+        str | None, typer.Option("--a-ref-row", help="Coordinate row in A if different from --a-ref.")
+    ] = None,
+    b_ref_row: Annotated[
+        str | None, typer.Option("--b-ref-row", help="Coordinate row in B if different from --b-ref.")
+    ] = None,
+    c_ref_row: Annotated[
+        str | None, typer.Option("--c-ref-row", help="Coordinate row in C if different from --c-ref.")
+    ] = None,
 ) -> None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     try:
@@ -322,10 +331,11 @@ def analyze(
                     f"input changed while reading: {path}. Retry with stable input files."
                 )
 
+        coordinate_rows = (a_ref_row, b_ref_row, c_ref_row)
         maps = tuple(
-            build_reference_map(component, ref_id, start)
-            for component, ref_id, start in zip(
-                original, (a_ref, b_ref, c_ref), (a_start, b_start, c_start)
+            build_reference_map(component, ref_id, start, row_id=row_id)
+            for component, ref_id, start, row_id in zip(
+                original, (a_ref, b_ref, c_ref), (a_start, b_start, c_start), coordinate_rows
             )
         )
         matched = synchronize(*original, table)
@@ -389,6 +399,7 @@ def analyze(
                     component.name: {
                         "molecule_type": component.molecule.value,
                         "reference_id": mapping.reference_id,
+                        **({"reference_row_id": row_id} if row_id is not None else {}),
                         "reference_start": mapping.start,
                         "input_sequences": component.n_sequences,
                         "original_sites": component.n_sites,
@@ -398,7 +409,7 @@ def analyze(
                         "mean_gap_fraction": stats.mean_gap_fraction,
                         "mean_missing_fraction": stats.mean_missing_fraction,
                     }
-                    for component, mapping, stats in zip(original, maps, qc.components)
+                    for component, mapping, stats, row_id in zip(original, maps, qc.components, coordinate_rows)
                 },
                 "settings": {**mask_options, **weighting_options, **table_options, "plots": plots},
                 "matched_observations": matched.n_observations,

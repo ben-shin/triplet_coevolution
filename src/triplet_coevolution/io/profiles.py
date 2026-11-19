@@ -49,8 +49,11 @@ def check_profile(comp):
         for line in handle:
             if line.startswith(marker):
                 count += 1
-            elif count == 1 and alphabet is None and line.startswith("ALPH "):
-                alphabet = line.split()[1].lower()
+            elif count == 1 and alphabet is None and line.split(maxsplit=1)[:1] == ["ALPH"]:
+                tokens = line.split()
+                if len(tokens) != 2:
+                    raise ValueError(f"{comp['profile']}: ALPH header requires one alphabet value")
+                alphabet = tokens[1].lower()
     if count != 1 or alphabet != expected:
         raise ValueError(
             f"{comp['profile']}: expected one text {marker} profile with alphabet {expected}"
