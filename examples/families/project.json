@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "components": {
+    "A": "ATPase",
+    "B": "Partner",
+    "C": "guide_RNA"
+  },
+  "expected_orthogroups": {
+    "A": [
+      "demo:A"
+    ],
+    "B": [
+      "demo:B"
+    ],
+    "C": [
+      "demo:C"
+    ]
+  }
+}

@@ -209,11 +209,41 @@ def mutual_information_block(
     n_valid = np.zeros(mi.shape, dtype=np.int64)
     valid_weight = np.zeros(mi.shape, dtype=np.float64)
 
-    for i in range(a.n_sites):
-        for j in range(b.n_sites):
-            mi[i, j], n_valid[i, j], valid_weight[i, j] = _site_mi(
-                a.matrix[:, i], b.matrix[:, j], q_a, q_b, row_weights, min_valid,
+    # Several column pairs share each bincount call. Each receives a separate
+    # range of joint-state bins and one discarded bin for excluded observations.
+    n = a.n_sequences
+    states = q_a * q_b
+    batch = max(1, min(b.n_sites, 65536 // max(n, states)))
+    y = np.ascontiguousarray(b.matrix.T)
+    y_valid = (y >= 0) & (y < q_b) & (row_weights > 0)
+    offsets = (np.arange(batch, dtype=np.int64) * (states + 1))[:, None]
+    tiled_weights = np.tile(row_weights, batch)
+    for i, x in enumerate(a.matrix.T):
+        x_valid = (x >= 0) & (x < q_a)
+        x_index = x * q_b
+        for start in range(0, b.n_sites, batch):
+            stop = min(start + batch, b.n_sites)
+            cols = slice(start, stop)
+            size = stop - start
+            valid = x_valid & y_valid[cols]
+            n_valid[i, cols] = valid.sum(axis=1)
+            weight = np.where(valid, row_weights, 0).sum(axis=1)
+            valid_weight[i, cols] = weight
+            indices = offsets[:size] + np.where(valid, x_index + y[cols], states)
+            counts = np.bincount(
+                indices.ravel(), weights=tiled_weights[: size * n], minlength=size * (states + 1)
+            ).reshape(size, states + 1)
+            joint = (
+                counts[:, :states].reshape(size, q_a, q_b)
+                / np.where(weight, weight, 1)[:, None, None]
             )
+            expected = joint.sum(axis=1, keepdims=True) * joint.sum(axis=2, keepdims=True)
+            occupied = joint > 0
+            terms = np.zeros_like(joint)
+            np.divide(joint, expected, out=terms, where=occupied)
+            np.log2(terms, out=terms, where=occupied)
+            bits = (joint * terms).sum(axis=(1, 2))
+            mi[i, cols] = np.where(n_valid[i, cols] >= min_valid, np.maximum(bits, 0.0), np.nan)
 
     mi_apc = apc(mi)
 

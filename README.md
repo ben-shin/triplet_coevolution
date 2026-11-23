@@ -4,6 +4,7 @@ Search local sequence collections, build alignments, match homologs and measure 
 
 | Start with | Command | Result |
 | --- | --- | --- |
+| Three named folders containing Stockholm families, including gzip-compressed files | `triplet evidence` | Candidate and group evidence, synchronized rows and reference coordinates for scoring |
 | Three local search databases, seeds or profiles, references and pairing evidence | `triplet run` | Search hits, retrieved sequences, alignments, a pairing audit and the complete analysis |
 | Three unpaired alignments and genome or orthology evidence | `triplet prepare` | Matched observations, QC and inputs for `analyze` |
 | Three aligned components and a curated match table | `triplet analyze` | Ranked scores, benchmarks, a site network and an offline HTML report |
@@ -25,6 +26,14 @@ triplet --version
 For PNG heatmaps, install `python -m pip install ".[plots]"`. For development, use `python -m pip install -e ".[dev,plots]"`, then run `python -m pytest -q` and `ruff check src tests`. The examples use local files. Additional search programs have their own installation requirements, listed in the [workflow guide](docs/workflows.md).
 
 ## Run the complete workflow
+
+If you already have three Stockholm families, put each file in a separate folder under [input](input/README.md). Name the folders after your proteins or nucleic acids and run the following command from the repository root.
+
+```shell
+triplet evidence --input input --out results/prepared
+```
+
+The command prepares data and records missing, contested and resolved matches. With sufficient evidence, molecule types and coordinate references, it also writes arguments for replay with `triplet analyze`. Read the [three-folder guide](docs/families.md) for `targets.txt`, offline mappings and caches, or opt-in live UniProt resolution.
 
 Run the bundled example from the repository root with the environment active. Each command takes a JSON configuration. Paths inside it are relative to that file.
 
@@ -101,3 +110,5 @@ By default, each table contains up to 1,000 pairs ranked by `mi_apc`. Use `--sco
 5. **Benchmark signal.** Use `--permutations` and `--seed` for reproducible null draws, optionally restricted by a match-table annotation named with `--strata-column`. Supply `--contacts` for a comparison against labeled reference-coordinate contacts. Shared ancestry and indirect associations can contribute to high scores, and sparse observations can destabilize estimates. Interpret rankings alongside depth, coverage and benchmark resolution.
 
 The [methods guide](docs/methods.md) describes statistical assumptions, regularization, candidate selection, null hypotheses, multiple testing, score interpretation and computational limits.
+
+The [performance guide](docs/performance.md) provides reproducible synthetic benchmarks for weighting and permutation calibration. The [Stockholm reader guide](docs/stockholm.md) measures extraction memory as family size increases. Neither benchmark runs during installation or preparation.

@@ -198,6 +198,25 @@ def attach_workflow_report(directory: Path, workflow_summary: dict, matching_qc:
                  workflow_section=_workflow_section(workflow_summary, matching_qc))
 
 
+def attach_evidence_report(directory: Path, workflow: dict) -> None:
+    """Connect a scored Stockholm subset to its original row, group and coordinate evidence."""
+    summary = json.loads((directory / "run_summary.json").read_text(encoding="utf-8"))
+    table = _table(["Component", "Folder or name", "Source rows", "Exported rows", "Reference"], (
+        (key, comp["name"], comp["source_rows"], comp["exported_rows"], comp["reference_id"])
+        for key, comp in workflow["components"].items()
+    ))
+    links = (("evidence", "Candidate evidence"), ("group_audit", "Group decisions"),
+             ("reference_coordinates", "Reference coordinates"), ("matches", "Matched observations"),
+             ("analyze_args", "Replay analysis"))
+    section = (
+        '<section id="workflow"><h2>Stockholm families and matching evidence</h2>' + table
+        + f'<p>{workflow["counts"]["resolved_groups"]:,} groups supplied complete matches.</p>'
+        + '<p class="audit-links">' + "".join(_link("../" + workflow[key], label) for key, label in links)
+        + _link("../workflow_summary.json", "Workflow manifest") + '</p></section>'
+    )
+    write_report(directory, summary, ranked_tables(summary), workflow_section=section)
+
+
 def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
                  workflow_section: str = "") -> None:
     components = summary["components"]

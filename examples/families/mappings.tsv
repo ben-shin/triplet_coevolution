@@ -1,0 +1,13 @@
+component	identifier	protein_id	genome_id	orthogroup	source
+A	A1	locus-A1	genome1	demo:A	constructed example
+A	A2	locus-A2	genome2	demo:A	constructed example
+A	A3	locus-A3	genome3	demo:A	constructed example
+A	A4	locus-A4	genome4	demo:A	constructed example
+B	B1	locus-B1	genome1	demo:B	constructed example
+B	B2	locus-B2	genome2	demo:B	constructed example
+B	B3	locus-B3	genome3	demo:B	constructed example
+B	B4	locus-B4	genome4	demo:B	constructed example
+B	B5	locus-B5	genome5	demo:B	constructed example
+C	C1	locus-C1	genome1	demo:C	constructed example
+C	C2	locus-C2	genome2	demo:C	constructed example
+C	C3	locus-C3	genome3	demo:C	constructed example

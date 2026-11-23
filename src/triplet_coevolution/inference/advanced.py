@@ -12,7 +12,7 @@ from triplet_coevolution.inference.global_potts import global_triples
 from triplet_coevolution.inference.mi import triplet_mi
 from triplet_coevolution.inference.potts import PAIRS, direct_couplings
 from triplet_coevolution.inference.threebody import fit_triples, sample_candidates
-from triplet_coevolution.inference.weights import sequence_weights
+from triplet_coevolution.inference.weights import _WeightComparisons
 from triplet_coevolution.validation.nulls import permutation_test
 from triplet_coevolution.validation.structure import contact_metrics, read_contacts
 
@@ -222,9 +222,12 @@ def write_advanced_results(
     pair_scores, dca_blocks, triples, observed, diagnostics = score_data(msa, weights, mi_result)
     null = {}
     if permutations:
+        comparisons = _WeightComparisons(msa.components, reuse=True)
 
         def refit(shuffled):
-            w = sequence_weights(shuffled, weights.identity_threshold, weights.min_overlap)
+            w = comparisons.weights(
+                weights.identity_threshold, weights.min_overlap, shuffled.components
+            )
             return score_data(shuffled, w)[3]
 
         null = permutation_test(

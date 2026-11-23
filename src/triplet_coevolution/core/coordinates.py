@@ -19,6 +19,8 @@ def _check_positive_int(value: int, name: str) -> int:
 def reference_positions(
   gapped_reference: str,
   start: int = 1,
+  *,
+  strand: str = "+",
 ) -> tuple[int | None, ...]:
   """number occupied ref sites, use None for aln gaps
   - and . do not advance numbering
@@ -27,6 +29,8 @@ def reference_positions(
   """
 
   start = _check_positive_int(start, "start")
+  if strand not in ("+", "-"):
+    raise ValueError("reference strand must be + or -")
 
   if not isinstance(gapped_reference, str) or not gapped_reference:
     raise ValueError("reference sequence must be a nonempty string")
@@ -44,8 +48,10 @@ def reference_positions(
     if symbol in GAPS:
       positions.append(None)
     else:
+      if next_position < 1:
+        raise ValueError("reverse reference extends below position 1; check its first position")
       positions.append(next_position)
-      next_position += 1
+      next_position += 1 if strand == "+" else -1
 
   return tuple(positions)
 
@@ -74,6 +80,7 @@ class ReferenceCoordinates:
   reference_positions: tuple[int | None, ...]
   symbols: tuple[str, ...]
   start: int = 1
+  strand: str = "+"
 
   def __post_init__(self) -> None:
     columns = tuple(self.original_columns)
@@ -81,6 +88,8 @@ class ReferenceCoordinates:
     symbols = tuple(self.symbols)
 
     _check_positive_int(self.start, "start")
+    if self.strand not in ("+", "-"):
+      raise ValueError("reference strand must be + or -")
 
     if self.component not in {"A", "B", "C"}:
       raise ValueError("component must be A, B, or C")
@@ -112,13 +121,16 @@ class ReferenceCoordinates:
     numbered = [pos for pos in positions if pos is not None]
 
     if any(
-      isinstance(pos, bool) or not isinstance(pos, Integral) or pos < self.start
+      isinstance(pos, bool) or not isinstance(pos, Integral) or pos < 1
       for pos in numbered
     ):
       raise ValueError("reference positions must be positive integers")
 
-    if any(int(a) >= int(b) for a, b in pairwise(numbered)):
-      raise ValueError("reference positions must be strictly increasing")
+    direction = 1 if self.strand == "+" else -1
+    if numbered and (int(numbered[0]) - self.start) * direction < 0:
+      raise ValueError("reference positions precede the configured start on this strand")
+    if any((int(b) - int(a)) * direction <= 0 for a, b in pairwise(numbered)):
+      raise ValueError("reference positions must progress along the reference strand")
 
     object.__setattr__(self, "original_columns", tuple(int(i) for i in columns))
     object.__setattr__(
@@ -161,6 +173,7 @@ def build_reference_map(
   start: int = 1,
   *,
   row_id: str | None = None,
+  strand: str = "+",
 ) -> ReferenceCoordinates:
   """Map alignment columns to a biological reference using its coordinate row.
 
@@ -170,6 +183,8 @@ def build_reference_map(
 
   if not isinstance(msa, ComponentMSA):
     raise TypeError("build_reference_map expects a ComponentMSA")
+  if strand == "-" and msa.molecule.value == "protein":
+    raise ValueError("reverse reference numbering requires a nucleotide component")
 
   coordinate_id = reference_id if row_id is None else row_id
   if coordinate_id not in msa.ids:
@@ -183,9 +198,10 @@ def build_reference_map(
     component=msa.name,
     reference_id=reference_id,
     original_columns=tuple(range(msa.n_sites)),
-    reference_positions=reference_positions(reference, start=start),
+    reference_positions=reference_positions(reference, start=start, strand=strand),
     symbols=tuple(reference),
     start=start,
+    strand=strand,
   )
 
 
@@ -225,4 +241,5 @@ def subset_reference_map(
     reference_positions=tuple(mapping.reference_positions[i] for i in indices),
     symbols=tuple(mapping.symbols[i] for i in indices),
     start=mapping.start,
+    strand=mapping.strand,
   )

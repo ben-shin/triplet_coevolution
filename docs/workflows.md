@@ -1,5 +1,7 @@
 # Prepare and run workflows
 
+For three existing Stockholm families in named component folders, see the [three-folder evidence workflow](families.md). It can discover candidates directly from family records and prepare a small aligned subset for analysis.
+
 Use `triplet prepare` when your three alignments already exist and sequence rows still need pairing. Use `triplet run` to start with unaligned local FASTA databases, retrieve homolog domains, build reference-anchored alignments, match observations and score them. Both commands require a new or empty output directory.
 
 ## Run the examples

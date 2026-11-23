@@ -14,6 +14,7 @@ import typer
 
 from triplet_coevolution import __version__
 from triplet_coevolution.core.coordinates import build_reference_map, subset_reference_map
+from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
 from triplet_coevolution.inference.weights import sequence_weights
 from triplet_coevolution.io.alignments import read_msa
@@ -35,6 +36,7 @@ SUMMARY_NAME = "run_summary.json"
 
 app.command("prepare")(prepare)
 app.command("run")(run)
+app.command("evidence")(evidence)
 
 
 def _show_version(value: bool) -> None:
@@ -259,6 +261,9 @@ def analyze(
     c_ref_row: Annotated[
         str | None, typer.Option("--c-ref-row", help="Coordinate row in C if different from --c-ref.")
     ] = None,
+    a_strand: Annotated[str, typer.Option("--a-strand", help="Reference coordinate direction (+ or -).")] = "+",
+    b_strand: Annotated[str, typer.Option("--b-strand", help="Reference coordinate direction (+ or -).")] = "+",
+    c_strand: Annotated[str, typer.Option("--c-strand", help="Reference coordinate direction (+ or -).")] = "+",
 ) -> None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     try:
@@ -333,9 +338,10 @@ def analyze(
 
         coordinate_rows = (a_ref_row, b_ref_row, c_ref_row)
         maps = tuple(
-            build_reference_map(component, ref_id, start, row_id=row_id)
-            for component, ref_id, start, row_id in zip(
-                original, (a_ref, b_ref, c_ref), (a_start, b_start, c_start), coordinate_rows
+            build_reference_map(component, ref_id, start, row_id=row_id, strand=strand)
+            for component, ref_id, start, row_id, strand in zip(
+                original, (a_ref, b_ref, c_ref), (a_start, b_start, c_start), coordinate_rows,
+                (a_strand, b_strand, c_strand),
             )
         )
         matched = synchronize(*original, table)
@@ -401,6 +407,7 @@ def analyze(
                         "reference_id": mapping.reference_id,
                         **({"reference_row_id": row_id} if row_id is not None else {}),
                         "reference_start": mapping.start,
+                        **({"reference_strand": "-"} if mapping.strand == "-" else {}),
                         "input_sequences": component.n_sequences,
                         "original_sites": component.n_sites,
                         "retained_sites": mapping.n_sites,

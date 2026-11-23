@@ -31,6 +31,18 @@ version = {attr = "triplet_coevolution.__version__"}
 where = ["src"]
 include = ["triplet_coevolution*"]
 
+[tool.setuptools.data-files]
+"share/triplet-coevolution" = ["README.md"]
+"share/triplet-coevolution/input" = ["input/README.md"]
+"share/triplet-coevolution/docs" = ["docs/*.md"]
+"share/triplet-coevolution/benchmarks" = ["benchmarks/*.py"]
+"share/triplet-coevolution/examples/mixed" = ["examples/mixed/*"]
+"share/triplet-coevolution/examples/workflow" = ["examples/workflow/*"]
+"share/triplet-coevolution/examples/families" = ["examples/families/*.tsv", "examples/families/*.json"]
+"share/triplet-coevolution/examples/families/ATPase" = ["examples/families/ATPase/*"]
+"share/triplet-coevolution/examples/families/Partner" = ["examples/families/Partner/*"]
+"share/triplet-coevolution/examples/families/guide_RNA" = ["examples/families/guide_RNA/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
