@@ -33,8 +33,7 @@ def manifest(path, rows):
                     protein_id=protein,
                     genome_id=genome,
                     orthogroup=og,
-                    source="collection-v2",
-                    **extras,
+                    **{"source": "collection-v2", **extras},
                 )
             )
     return path
@@ -215,6 +214,84 @@ def test_out_of_panel_reference_rows_retain_exact_domain_and_accession(tmp_path)
     assert result["roles"]["A"]["reference"] == "display-a"
     assert result["roles"]["A"]["reference_row_id"] == "source-a/9-15"
     assert len(read(out / "evidence.tsv")) == 3
+
+
+@pytest.mark.parametrize(
+    ("second", "protein", "group", "resolved", "reason"),
+    [
+        ("alias/1-8", "p", "curated:other", 0, "A:orthology_conflict"),
+        ("alias/1-8", "p", "curated:A", 0, "A:multiple_candidates"),
+        ("alias/10-17", "p", "curated:other", 1, ""),
+        ("alias/8-1", "p", "curated:other", 1, ""),
+        ("alias/1-8", "different", "curated:other", 1, ""),
+    ],
+)
+def test_compare_sourced_claims_only_on_known_matching_molecular_intervals(
+    tmp_path, second, protein, group, resolved, reason
+):
+    rows = complete()[1:] + [
+        ("A", "one/1-8", "p", "g", "curated:A", {"source": "curator-one"}),
+        ("A", second, protein, "g", group, {"source": "curator-two"}),
+    ]
+    out = tmp_path / "out"
+    result = generate_evidence(
+        inventory(rows),
+        out,
+        manifest=manifest(tmp_path / "m.tsv", rows),
+        expected_orthogroups=EXPECTED,
+    )
+    assert result["counts"]["resolved_groups"] == resolved
+    audit = [r for r in read(out / "evidence.tsv") if r["component"] == "A"]
+    assert {r["source"] for r in audit} == {"curator-one", "curator-two"}
+    if reason:
+        assert all(reason in r["group_reasons"] for r in audit)
+        assert all(r["selected"] == "0" for r in audit)
+    if reason == "A:orthology_conflict":
+        assert all(r["role_status"] == "orthology_conflict" for r in audit)
+
+
+def test_unknown_intervals_do_not_merge_rows_and_concordant_mappings_do_not_inflate_counts(
+    tmp_path,
+):
+    rows = complete()[1:] + [
+        ("A", "one", "p", "g", "curated:A", {"source": "curator-one"}),
+        ("A", "same-row-alias", "p", "g", "curated:A", {"source": "curator-two"}),
+    ]
+    source = manifest(tmp_path / "m.tsv", rows)
+    inv = inventory(rows)
+    inv["A"] = [EvidenceRow("one", selectors=("same-row-alias",))]
+    result = generate_evidence(
+        inv, tmp_path / "one", manifest=source, expected_orthogroups=EXPECTED
+    )
+    assert result["counts"]["resolved_groups"] == 1
+    assert read(tmp_path / "one" / "groups.tsv")[0]["a_candidates"] == "1"
+    result = generate_evidence(
+        inventory(rows), tmp_path / "two", manifest=source, expected_orthogroups=EXPECTED
+    )
+    assert result["counts"]["resolved_groups"] == 0
+    assert read(tmp_path / "two" / "groups.tsv")[0]["a_candidates"] == "2"
+
+
+def test_reference_interval_disagreement_is_visible_when_anchor_is_outside_targets(tmp_path):
+    rows = complete()[1:] + [
+        ("A", "target/1-8", "same", "g", "curated:A", {"source": "target collection"}),
+        ("A", "seed/1-8", "same", "g", "curated:other", {"source": "reference collection"}),
+    ]
+    inv = inventory(rows)
+    inv["A"] = [EvidenceRow("target/1-8")]
+    out = tmp_path / "out"
+    report = generate_evidence(
+        inv,
+        out,
+        manifest=manifest(tmp_path / "map.tsv", rows),
+        expected_orthogroups={"B": ["curated:B"], "C": ["curated:C"]},
+        reference_anchors={"A": "seed/1-8"},
+    )
+    assert report["counts"]["resolved_groups"] == 0
+    assert report["roles"]["A"]["source"] == "ambiguous_reference_orthology"
+    assert report["roles"]["A"]["observed_anchor_orthogroups"] == ["curated:A", "curated:other"]
+    assert report["roles"]["A"]["anchor_evidence"][0]["source"] == "reference collection"
+    assert read(out / "evidence.tsv")[0]["source"] == "target collection"
 
 
 def test_taxon_only_and_conflicting_assembly_or_shared_molecule(tmp_path):

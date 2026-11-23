@@ -22,6 +22,8 @@ The default assigns A, B and C in ascending, case-sensitive Unicode order of the
 
 Use `component.json` in each folder for molecule and reference details. Molecules are `protein`, `dna` or `rna`. Leave the molecule undeclared when you only need the offline inventory and lack reliable type information. Supply `--default-molecule protein` when all undeclared components are proteins. Use the biological `reference_id` that should appear in score tables. When that identifier matches multiple domains, supply the exact Stockholm `reference_row_id`. The reference can be outside the matched panel.
 
+Preparation checks every matched sequence and each coordinate reference against the declared scoring alphabet as it extracts their aligned fragments. Lowercase residues, supported ambiguity codes, gaps and `?` are accepted. An incompatible symbol, such as T in a declared RNA row, stops publication and identifies the component, row and fragment position. An undeclared molecule can be inventoried and exported for inspection. Scoring requires its type.
+
 ```json
 {
   "molecule": "protein",

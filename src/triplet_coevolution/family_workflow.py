@@ -12,6 +12,7 @@ import typer
 
 from triplet_coevolution import __version__
 from triplet_coevolution.config import COMPONENTS
+from triplet_coevolution.core.alphabets import encode_sequence
 from triplet_coevolution.core.coordinates import reference_positions
 from triplet_coevolution.family_config import family_config, manifest_targets
 from triplet_coevolution.io.metadata import REQUIRED_COLUMNS, TripletTable, write_triplet_table
@@ -104,6 +105,27 @@ def _matched_subset(replay, output, extra_reference, count):
             dest.write(line)
 
 
+def _sequence_validator(component, molecule):
+    """Validate selected fragments in source order with the scoring alphabet."""
+    if molecule is None:
+        return None
+    consumed = defaultdict(int)
+
+    def validate(row_id, fragment):
+        try:
+            if not fragment.isascii():
+                raise ValueError(f"non-ASCII residue in {molecule} sequence")
+            encode_sequence(fragment, molecule)
+        except ValueError as exc:
+            raise ValueError(
+                f"component {component}, row {row_id!r}, fragment beginning at alignment column "
+                f"{consumed[row_id] + 1}: {exc}"
+            ) from exc
+        consumed[row_id] += len(fragment)
+
+    return validate
+
+
 def _extract(inventories, references, cfg, prepared, matches):
     components = {}
     kwargs = {"matches": prepared / "matches.tsv"}
@@ -131,7 +153,10 @@ def _extract(inventories, references, cfg, prepared, matches):
             replay = prepared / f"{name}.with_reference.sto" if separate_reference else output
             if rows:
                 gapped = inventory.extract(
-                    rows, replay, reference_row_id=ref.row_id if ref else None
+                    rows,
+                    replay,
+                    reference_row_id=ref.row_id if ref else None,
+                    validate_fragment=_sequence_validator(name, comp["molecule"]),
                 )
                 if separate_reference and ids:
                     _matched_subset(replay, output, ref.row_id, len(ids))

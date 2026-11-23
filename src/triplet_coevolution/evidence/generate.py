@@ -6,7 +6,6 @@ import itertools
 import json
 import re
 import sqlite3
-from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote
@@ -16,7 +15,7 @@ from .uniprot import Resolver
 
 COMPONENTS = ("A", "B", "C")
 REQUIRED = {"component", "identifier", "protein_id", "genome_id", "orthogroup", "source"}
-OPTIONAL = {"taxon_id", "neighborhood_id", "assembly_id", "proteome_id"}
+OPTIONAL = {"taxon_id", "neighborhood_id", "assembly_id", "proteome_id", "replicon_id"}
 GROUP_FIELDS = (
     "group_id",
     "genome_id",
@@ -47,6 +46,7 @@ AUDIT_FIELDS = (
     "genome_id",
     "assembly_id",
     "proteome_id",
+    "replicon_id",
     "taxon_id",
     "neighborhood_id",
     "orthogroups",
@@ -73,6 +73,8 @@ def _database(db):
         CREATE TABLE mappings (row_key INTEGER, protein TEXT, genome TEXT, locus TEXT,
             taxon TEXT, groups_json TEXT, raw TEXT, lookup TEXT, status TEXT);
         CREATE INDEX mappings_key ON mappings(row_key,protein,genome,locus);
+        CREATE TABLE assignments (row_key INTEGER, protein TEXT, genome TEXT, locus TEXT,
+            groups_json TEXT, replicons_json TEXT, PRIMARY KEY(row_key,protein,genome,locus));
         CREATE TABLE candidates (row_key INTEGER, comp TEXT, protein TEXT, genome TEXT, locus TEXT,
             group_id TEXT, present INTEGER, reason TEXT, PRIMARY KEY(row_key,protein,genome,locus));
         CREATE INDEX candidates_group ON candidates(group_id,comp);
@@ -213,6 +215,42 @@ def _collect(db, comp, records, resolver, allow_uniprot, *, anchor=False):
                     _append(db, key, query, {**stamp, **mapping})
 
 
+def _reconcile_intervals(db):
+    """Combine claims on a known oriented interval; retain every distinct alignment row."""
+    facts = db.execute("""
+        SELECT r.comp,m.protein,m.genome,m.locus,r.start,r.end,r.id,m.groups_json,
+               json_extract(m.raw,'$.replicon_id') FROM mappings m JOIN rows r ON r.id=m.row_key
+        WHERE m.status='' ORDER BY r.comp,m.protein,m.genome,m.locus,r.start,r.end,r.id
+    """)
+
+    def interval(fact):
+        comp, protein, genome, locus, start, end, key = fact[:7]
+        # Unbound local identifiers and unknown spans establish no equivalence between rows.
+        return (
+            comp,
+            protein,
+            genome,
+            locus,
+            start,
+            end,
+            None if protein and genome and start else key,
+        )
+
+    for placement, records in itertools.groupby(facts, key=interval):
+        _, protein, genome, locus, *_ = placement
+        keys, groups, replicons = set(), set(), set()
+        for *_, row_key, memberships, replicon in records:
+            keys.add(row_key)
+            groups.update(json.loads(memberships))
+            if replicon:
+                replicons.add(replicon)
+        group_values, replicon_values = json.dumps(sorted(groups)), json.dumps(sorted(replicons))
+        db.executemany(
+            "INSERT INTO assignments VALUES (?,?,?,?,?,?)",
+            ((key, protein, genome, locus, group_values, replicon_values) for key in keys),
+        )
+
+
 def _role_expectations(db, supplied, anchors, scope):
     expected, audit = {}, {}
     for comp in COMPONENTS:
@@ -224,15 +262,20 @@ def _role_expectations(db, supplied, anchors, scope):
         ref = (anchors or {}).get(comp)
         decision = "configured" if groups else "no_role_anchor"
         evidence = []
+        memberships = set()
         if ref and not groups:
-            proteins, memberships = set(), set()
-            for protein, group_json, source, lookup in db.execute(
-                "SELECT protein,groups_json,raw,lookup FROM mappings JOIN rows ON rows.id=row_key WHERE anchor=1 AND comp=? ORDER BY protein,lookup,raw",
+            proteins = set()
+            for protein, group_json in db.execute(
+                "SELECT protein,groups_json FROM assignments JOIN rows ON rows.id=row_key WHERE anchor=1 AND comp=?",
                 (comp,),
             ):
                 proteins.add(protein)
+                memberships.update(json.loads(group_json))
+            for protein, group_json, source, lookup, status in db.execute(
+                "SELECT protein,groups_json,raw,lookup,status FROM mappings JOIN rows ON rows.id=row_key WHERE anchor=1 AND comp=? ORDER BY protein,lookup,raw",
+                (comp,),
+            ):
                 ogs = json.loads(group_json)
-                memberships.update(ogs)
                 detail = json.loads(source)
                 evidence.append(
                     {
@@ -241,6 +284,8 @@ def _role_expectations(db, supplied, anchors, scope):
                         "orthogroups": ogs,
                         "source": detail.get("source", ""),
                         "release": detail.get("release", ""),
+                        "lookup_status": status or "mapped",
+                        "replicon_id": detail.get("replicon_id", ""),
                     }
                 )
             eligible = {
@@ -261,6 +306,8 @@ def _role_expectations(db, supplied, anchors, scope):
             "orthogroups": sorted(groups),
             "anchor_evidence": evidence,
         }
+        if ref and not values:
+            audit[comp]["observed_anchor_orthogroups"] = sorted(memberships)
     return expected, audit
 
 
@@ -295,28 +342,27 @@ def _classify(db, expected):
         c: expected[c] - set().union(*(expected[other] for other in COMPONENTS if other != c))
         for c in COMPONENTS
     }
-    for key, comp, present in db.execute(
-        "SELECT id,comp,present FROM rows WHERE anchor=0 ORDER BY id"
+    for key, comp, present, protein, genome, locus, raw_groups, raw_replicons, n in db.execute(
+        """SELECT row_key,comp,present,protein,genome,locus,groups_json,replicons_json,
+            COUNT(*) OVER (PARTITION BY row_key) FROM assignments JOIN rows ON rows.id=row_key
+            WHERE anchor=0"""
     ):
-        placements = defaultdict(set)
-        for protein, genome, locus, raw in db.execute(
-            "SELECT protein,genome,locus,groups_json FROM mappings WHERE row_key=?", (key,)
-        ):
-            placements[protein, genome, locus].update(json.loads(raw))
-        for (protein, genome, locus), groups in placements.items():
-            reason = _role_status(groups, expected[comp])
-            if reason == "supported" and not groups & distinguishing[comp]:
-                reason = "overlapping_role_orthology"
-            if len(placements) > 1:
-                reason = "multiple_mappings"
-            elif not protein:
-                reason = "missing_molecule_id"
-            elif not genome:
-                reason = "missing_genome"
-            db.execute(
-                "INSERT INTO candidates VALUES (?,?,?,?,?,?,?,?)",
-                (key, comp, protein, genome, locus, _group_id(genome, locus), present, reason),
-            )
+        groups = set(json.loads(raw_groups))
+        reason = _role_status(groups, expected[comp])
+        if reason == "supported" and not groups & distinguishing[comp]:
+            reason = "overlapping_role_orthology"
+        if n > 1:
+            reason = "multiple_mappings"
+        elif reason != "orthogroup_mismatch" and len(json.loads(raw_replicons)) > 1:
+            reason = "multiple_replicon_annotations"
+        elif not protein:
+            reason = "missing_molecule_id"
+        elif not genome:
+            reason = "missing_genome"
+        db.execute(
+            "INSERT INTO candidates VALUES (?,?,?,?,?,?,?,?)",
+            (key, comp, protein, genome, locus, _group_id(genome, locus), present, reason),
+        )
     # A stable molecule attributed to distinct biological placements under two row aliases
     # remains uncertain even if each alias individually had a single manifest entry.
     db.execute("""CREATE TEMP TABLE conflicts AS SELECT comp,protein FROM candidates WHERE protein!=''
@@ -393,6 +439,7 @@ def _summarize_groups(db):
         ambiguous = {
             "multiple_candidates",
             "multiple_mappings",
+            "multiple_replicon_annotations",
             "orthology_conflict",
             "overlapping_role_orthology",
             "conflicting_taxa",
@@ -423,8 +470,9 @@ def _write_table(path, header, rows):
 def _audit_rows(db, names):
     query = """SELECT c.group_id,g.status,g.reasons,r.comp,r.name,r.present,r.accession,r.start,r.end,
         r.selectors,m.lookup,m.raw,m.status,c.reason FROM mappings m JOIN rows r ON m.row_key=r.id
-        JOIN candidates c ON c.row_key=r.id AND c.protein=m.protein AND c.genome=m.genome AND c.locus=m.locus
-        LEFT JOIN groups g ON c.group_id=g.group_id ORDER BY r.comp,r.name,c.group_id,c.protein,m.lookup,m.raw"""
+        LEFT JOIN candidates c ON m.status='' AND c.row_key=r.id AND c.protein=m.protein AND c.genome=m.genome AND c.locus=m.locus
+        LEFT JOIN groups g ON c.group_id=g.group_id WHERE r.anchor=0
+        ORDER BY r.comp,r.name,c.group_id,c.protein,m.lookup,m.raw"""
     for (
         gid,
         gstatus,
@@ -474,6 +522,7 @@ def _audit_rows(db, names):
                     "genome_id",
                     "assembly_id",
                     "proteome_id",
+                    "replicon_id",
                     "taxon_id",
                     "neighborhood_id",
                 )
@@ -552,6 +601,7 @@ def generate_evidence(
                 )
                 anchor = (reference_rows or {}).get(comp, anchor)
                 _collect(db, comp, [anchor], resolver, comp in protein_components, anchor=True)
+        _reconcile_intervals(db)
         expected, decisions = _role_expectations(
             db, expected_orthogroups, reference_anchors, orthology_scope
         )

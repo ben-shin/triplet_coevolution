@@ -40,8 +40,11 @@ def test_folder_evidence_and_independent_replay(tmp_path, monkeypatch):
     assert summary["ready_for_analysis"] and summary["counts"]["resolved_groups"] == 3
     group_statuses = {row["genome_id"]: row["status"] for row in rows(out / summary["group_audit"])}
     assert group_statuses == {
-        "genome1": "resolved", "genome2": "resolved", "genome3": "resolved",
-        "genome4": "ambiguous", "genome5": "incomplete",
+        "genome1": "resolved",
+        "genome2": "resolved",
+        "genome3": "resolved",
+        "genome4": "ambiguous",
+        "genome5": "incomplete",
     }
     assert (
         summary["inputs"]["A.alignment"]["sha256"]
@@ -241,9 +244,14 @@ def test_mocked_online_cache_is_published_and_readonly_replayable(tmp_path, monk
     for name in ("family.sto", "targets.txt"):
         file = directory / "ATPase" / name
         file.write_text(file.read_text().replace("Aunknown", "P12345"))
-    monkeypatch.setattr(uniprot, "_request", lambda url: (
-        {"results": []}, {"x-uniprot-release": "mock", "x-uniprot-release-date": "01-Jan-2000"}
-    ))
+    monkeypatch.setattr(
+        uniprot,
+        "_request",
+        lambda url: (
+            {"results": []},
+            {"x-uniprot-release": "mock", "x-uniprot-release-date": "01-Jan-2000"},
+        ),
+    )
     online = tmp_path / "mock"
     result = invoke(directory, online, "--uniprot")
     assert result.exit_code == 0, (result.output, result.exception)
@@ -257,6 +265,65 @@ def test_mocked_online_cache_is_published_and_readonly_replayable(tmp_path, monk
         out = tmp_path / mode[2:]
         result = invoke(directory, out, mode)
         assert result.exit_code == 0, (result.output, result.exception)
-        assert (out / "metadata/evidence.tsv").read_bytes() == (online / "metadata/evidence.tsv").read_bytes()
-        assert json.loads((out / "metadata/evidence_summary.json").read_text())["resolver"]["cache_hits"] >= 1
+        assert (out / "metadata/evidence.tsv").read_bytes() == (
+            online / "metadata/evidence.tsv"
+        ).read_bytes()
+        assert (
+            json.loads((out / "metadata/evidence_summary.json").read_text())["resolver"][
+                "cache_hits"
+            ]
+            >= 1
+        )
         assert snapshot.read_bytes() == before
+
+
+@pytest.mark.parametrize("invalid_id", ["C1/1-4", "CREF/21-24"])
+def test_selected_rna_and_coordinate_reference_require_valid_alphabet(tmp_path, invalid_id):
+    directory = tmp_path / "input"
+    shutil.copytree(EXAMPLE, directory)
+    family = directory / "guide_RNA" / "family.sto"
+    records = [line.split() for line in family.read_text().splitlines() if line.startswith("C")]
+    # Put the invalid character in the second interleaved block.
+    first = [f"{key} {seq[:2]}" for key, seq in records]
+    second = [f"{key} {seq[2:-1]}{'T' if key == invalid_id else seq[-1]}" for key, seq in records]
+    family.write_text("\n".join(["# STOCKHOLM 1.0", *first, "", *second, "//", ""]))
+    out = tmp_path / "out"
+    out.mkdir()
+    result = invoke(directory, out)
+    assert result.exit_code != 0
+    assert f"component C, row '{invalid_id}'" in result.output
+    assert "fragment beginning at alignment column 3" in result.output
+    assert "invalid symbol 'T' at pos 3 for rna" in result.output
+    assert not list(out.iterdir())
+
+
+def test_fragment_validation_skips_unselected_rows_and_preserves_native_symbols(tmp_path):
+    directory = tmp_path / "input"
+    shutil.copytree(EXAMPLE, directory)
+    family = directory / "guide_RNA" / "family.sto"
+    family.write_text(
+        family.read_text().replace("C-GCU", "c.n?u").replace("//", "unused/1-4 T-TTT\n//")
+    )
+    out = tmp_path / "out"
+    result = invoke(directory, out)
+    assert result.exit_code == 0, (result.exception, result.output)
+    summary = json.loads((out / "workflow_summary.json").read_text())
+    assert summary["ready_for_analysis"] and summary["analyze_args"]
+    subset = read_msa(out / summary["components"]["C"]["alignment"], "C", "rna")
+    assert "unused/1-4" not in subset.ids
+    assert subset.sequences[subset.ids.index("C1/1-4")] == "C-N?U"
+
+
+def test_undeclared_molecule_retains_untyped_sequence_and_blocks_scoring(tmp_path):
+    directory = tmp_path / "input"
+    shutil.copytree(EXAMPLE, directory)
+    component = directory / "guide_RNA"
+    (component / "component.json").write_text('{"reference_id":"CREF"}')
+    family = component / "family.sto"
+    family.write_text(family.read_text().replace("C-GCU", "C-GCT"))
+    out = tmp_path / "out"
+    result = invoke(directory, out)
+    assert result.exit_code == 0, (result.exception, result.output)
+    summary = json.loads((out / "workflow_summary.json").read_text())
+    assert not summary["ready_for_analysis"] and not summary["analyze_args"]
+    assert "C-GCT" in (out / summary["components"]["C"]["alignment"]).read_text()

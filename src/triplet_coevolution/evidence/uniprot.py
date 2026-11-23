@@ -18,10 +18,38 @@ BASE = "https://rest.uniprot.org"
 KB_FIELDS = "accession,id,organism_id,xref_proteomes,xref_orthodb,xref_eggnog,xref_oma"
 PROTEOME_FIELDS = "upid,genome_assembly,organism_id"
 SCHEMA = 1
+MAPPING_SCHEMA = 2
 
 
 class UniProtError(ValueError):
     """The response or transport failed; a biological absence cannot be inferred."""
+
+
+def _replicon_annotations(payload):
+    """Expand each original proteome association into its documented component alternatives."""
+    version = payload.get("mapping_schema", 1)
+    if version == MAPPING_SCHEMA:
+        return payload
+    if version != 1:
+        raise UniProtError(f"unsupported UniProt mapping schema {version}")
+    mappings = []
+    for mapping in payload["mappings"]:
+        # V1 cached the complete cross-references with their original properties, even
+        # though it emitted only one molecular mapping per distinct proteome accession.
+        refs = {json.dumps(r, sort_keys=True): r for r in mapping.get("cross_references", ())}
+        cross_references = [refs[key] for key in sorted(refs)]
+        components = {
+            prop["value"].strip()
+            for ref in cross_references
+            if ref.get("database") == "Proteomes" and ref.get("id") == mapping.get("proteome_id")
+            for prop in ref.get("properties", ())
+            if prop.get("key") == "Component" and prop.get("value", "").strip()
+        }
+        for replicon in sorted(components) or [""]:
+            mappings.append(
+                {**mapping, "cross_references": cross_references, "replicon_id": replicon}
+            )
+    return {**payload, "mappings": mappings, "mapping_schema": MAPPING_SCHEMA}
 
 
 def _retry_delay(value, attempt):
@@ -235,12 +263,14 @@ class Resolver:
                             "proteome_release_date": proteome_date,
                         }
                     )
-            result[identifier] = {
-                "mappings": mappings,
-                "release": release[0],
-                "release_date": release[1],
-                "fetched_at": now,
-            }
+            result[identifier] = _replicon_annotations(
+                {
+                    "mappings": mappings,
+                    "release": release[0],
+                    "release_date": release[1],
+                    "fetched_at": now,
+                }
+            )
             self._store(identifier, result[identifier])
         self.db.commit()
         return result
@@ -266,7 +296,7 @@ class Resolver:
                 if not isinstance(payload, dict) or not isinstance(payload.get("mappings"), list):
                     raise ValueError(f"invalid cache entry for {key}")
                 self.releases.add((payload.get("release", ""), payload.get("release_date", "")))
-                result[key] = payload
+                result[key] = _replicon_annotations(payload)
             else:
                 missing.append(key)
         self.stats["cache_misses"] += len(missing)
@@ -281,6 +311,7 @@ class Resolver:
             "uniprot": self.live,
             "cache": self.cache_name,
             "cache_schema": SCHEMA,
+            "mapping_schema": MAPPING_SCHEMA,
             "endpoints": [f"{BASE}/uniprotkb/search", f"{BASE}/proteomes/search"],
             "releases": [{"release": r, "release_date": d} for r, d in sorted(self.releases)],
             "requests": self.stats["requests"],

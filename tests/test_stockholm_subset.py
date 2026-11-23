@@ -210,3 +210,94 @@ def test_gzip_subset_is_reproducible_across_paths(tmp_path):
     assert first == (tmp_path / "b.sto.gz").read_bytes()
     assert int.from_bytes(first[4:8], "little") == 0
     assert REF.encode() in gzip.decompress(first)
+
+
+@pytest.mark.parametrize("marker", ["#=GC RF", "#=GR discarded PP"])
+@pytest.mark.parametrize("separator", ["\n", ""])
+def test_misplaced_wrapped_annotation_fails_even_when_total_and_requested_rows_are_valid(
+    tmp_path, marker, separator
+):
+    path = tmp_path / "swapped.sto.gz"
+    path.write_bytes(
+        gzip.compress(
+            (
+                f"# STOCKHOLM 1.0\nselected ABC\ndiscarded DE-\n{marker} 12\n{separator}"
+                f"selected FG\ndiscarded H.\n{marker} 345\n//\n"
+            ).encode()
+        )
+    )
+    with (
+        pytest.raises(ValueError, match=r"fragment width 2.*sequence block width 3"),
+        open_stockholm(path),
+    ):
+        pytest.fail("the alignment inventory must reject misaligned source annotations")
+
+
+@pytest.mark.parametrize("separator", ["", "\n"])
+def test_variable_block_widths_and_full_length_tracks_share_original_columns(tmp_path, separator):
+    path = tmp_path / "wrapped.sto"
+    path.write_text(
+        "# STOCKHOLM 1.0\n#=GC SS_cons HHHEE\n\n"
+        f"x A-C\ny DEF\n#=GC RF 1.3\n#=GR x PP 1.3\n{separator}"
+        "x gT\ny h.\n#=GR x PP 45\n#=GC RF 45\n\n#=GR y SS __HH.\n//\n"
+    )
+    with open_stockholm(path) as inv:
+        output = tmp_path / "selected.sto"
+        inv.extract(["y", "x"], output)
+    lines = output.read_text().splitlines()
+    assert lines[1:-1] == [
+        "y DEFh.",
+        "#=GR y SS __HH.",
+        "x A-CgT",
+        "#=GR x PP 1.345",
+        "#=GC RF 1.345",
+        "#=GC SS_cons HHHEE",
+    ]
+
+
+@pytest.mark.parametrize("marker", ["#=GC RF", "#=GR x PP"])
+def test_fragmented_annotation_requires_observable_corresponding_blocks(tmp_path, marker):
+    path = tmp_path / "unassigned.sto"
+    path.write_text(
+        f"# STOCKHOLM 1.0\nx ABC\ny D-E\n\nx FG\ny h.\n\n{marker} 123\n\n{marker} 45\n//\n"
+    )
+    with pytest.raises(ValueError, match="no sequence block"), open_stockholm(path):
+        pass
+
+
+@pytest.mark.parametrize("second_fragment", ["45", "345"])
+def test_wrapped_annotations_before_block_rows_are_checked(tmp_path, second_fragment):
+    first = "123" if second_fragment == "45" else "12"
+    path = tmp_path / "leading.sto"
+    path.write_text(
+        f"# STOCKHOLM 1.0\n#=GC RF {first}\nx A-C\ny DEF\n\n"
+        f"#=GC RF {second_fragment}\nx gt\ny h.\n//\n"
+    )
+    if len(first) == 3:
+        with open_stockholm(path) as inv:
+            inv.extract(["x"], tmp_path / "part.sto")
+        assert "#=GC RF 12345" in (tmp_path / "part.sto").read_text().splitlines()
+    else:
+        with pytest.raises(ValueError, match="fragment width"), open_stockholm(path):
+            pass
+
+
+def test_validate_only_selected_sequence_fragments_before_publishing(tmp_path):
+    path = tmp_path / "source.sto"
+    path.write_text(FAMILY)
+    output = tmp_path / "selected.sto"
+    output.write_bytes(b"previous")
+    visited = []
+
+    def validator(row, fragment):
+        visited.append((row, fragment))
+        if row == REF and fragment == "GTA.":
+            raise ValueError("invalid selected reference fragment")
+
+    with open_stockholm(path) as inv:
+        with pytest.raises(ValueError, match="invalid selected reference"):
+            inv.extract([REPEAT, REF], output, reference_row_id=REF, validate_fragment=validator)
+        assert visited == [(REF, "aC.-"), (REPEAT, "tt.."), (REPEAT, "gT-A"), (REF, "GTA.")]
+        assert output.read_bytes() == b"previous"
+        inv.extract([REPEAT], output)
+    assert f"{REPEAT} tt..gT-A" in output.read_text().splitlines()

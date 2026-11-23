@@ -142,6 +142,26 @@ def _domain(row, occupied, allow_reverse):
     return base, start, end
 
 
+def _check_feature_blocks(db):
+    # A single complete annotation is absolute across the whole alignment. Wrapped
+    # tracks instead need a matching sequence block for every fragment.
+    bad = db.execute("""
+        SELECT p.row_id, p.tag, p.line, p.columns, b.columns
+        FROM pending_feature p
+        JOIN track t ON t.row_id = p.row_id AND t.tag = p.tag
+        LEFT JOIN sequence_block b ON b.section = p.section
+        WHERE t.fragments > 1 AND (b.section IS NULL OR b.columns != p.columns)
+        ORDER BY p.rowid LIMIT 1
+    """).fetchone()
+    if bad:
+        row, tag, line, actual, expected = bad
+        label = f"#=GR {row} {tag}" if row else f"#=GC {tag}"
+        where = f"{label} at record line {line} has fragment width {actual}"
+        if expected is None:
+            raise ValueError(f"{where} and no sequence block in its section")
+        raise ValueError(f"{where}, but sequence block width {expected} is required")
+
+
 def _index(db, stream, allow_reverse):
     db.executescript("""
         CREATE TABLE track (row_id TEXT, tag TEXT, first_line INTEGER, section INTEGER,
@@ -152,6 +172,9 @@ def _index(db, stream, allow_reverse):
             accession TEXT, start INTEGER, end INTEGER);
         CREATE INDEX on_base ON rows(base);
         CREATE TABLE alias (name TEXT, row_id TEXT, PRIMARY KEY (name, row_id)) WITHOUT ROWID;
+        CREATE TABLE sequence_block (section INTEGER PRIMARY KEY, columns INTEGER);
+        CREATE TABLE pending_feature (row_id TEXT, tag TEXT, line INTEGER, section INTEGER,
+            columns INTEGER);
     """)
     gf = {}
     section = sequence_sections = count_in_section = 0
@@ -190,12 +213,20 @@ def _index(db, stream, allow_reverse):
                 if first_row is None:
                     first_row, section_width, count_in_section = row, len(value), 0
                     sequence_sections += 1
+                    db.execute("INSERT INTO sequence_block VALUES (?, ?)", (section, section_width))
                 if len(value) != section_width:
                     raise ValueError(
                         f"unequal sequence fragment widths at {row!r}, record line {line}"
                     )
                 count_in_section += 1
                 occupied = len(value) - value.count("-") - value.count(".")
+            elif first_row is None or len(value) != section_width:
+                # The associated block might follow this annotation, or the source
+                # might supply this entire feature on one line. Decide at record end.
+                db.execute(
+                    "INSERT INTO pending_feature VALUES (?, ?, ?, ?, ?)",
+                    (row, tag, line, section, len(value)),
+                )
             updated = db.execute(
                 """
                 INSERT INTO track VALUES (?, ?, ?, ?, ?, ?, 1)
@@ -224,6 +255,7 @@ def _index(db, stream, allow_reverse):
     ).fetchone()
     if max_blocks > 1 and min_blocks != sequence_sections:
         raise ValueError("incomplete interleaved Stockholm block or duplicate row IDs")
+    _check_feature_blocks(db)
     for row, line, occupied in db.execute(
         "SELECT row_id, first_line, occupied FROM track WHERE tag=''"
     ):
@@ -262,7 +294,9 @@ def _index(db, stream, allow_reverse):
     count = db.execute("SELECT count(*) FROM rows").fetchone()[0]
     if "SQ" in gf and (not gf["SQ"].isdecimal() or int(gf["SQ"]) != count):
         raise ValueError(f"#=GF SQ {gf['SQ']!r} disagrees with {count} Stockholm rows")
-    db.executescript("DROP TABLE track; DROP TABLE gs;")
+    db.executescript(
+        "DROP TABLE track; DROP TABLE gs; DROP TABLE sequence_block; DROP TABLE pending_feature;"
+    )
     return count, width, gf
 
 
@@ -327,8 +361,13 @@ class StockholmInventory:
         if _signature(self._path) != self._signature:
             raise ValueError(f"Stockholm input changed while in use: {self._path}")
 
-    def extract(self, row_ids, output, *, reference_row_id=None):
-        """Write ordered rows with original columns; optionally return one gapped reference."""
+    def extract(self, row_ids, output, *, reference_row_id=None, validate_fragment=None):
+        """Write ordered rows and optionally return one gapped reference.
+
+        The optional validate_fragment(row_id, text) receives each selected raw
+        sequence fragment in input order, including the requested reference row.
+        Raising an exception preserves any existing output file.
+        """
         ordered = tuple(row_ids)
         selected = set(ordered)
         if not ordered or len(selected) != len(ordered):
@@ -381,6 +420,8 @@ class StockholmInventory:
                             elif kind == "#=GC" or (
                                 kind in ("sequence", "#=GR") and row in selected
                             ):
+                                if kind == "sequence" and validate_fragment is not None:
+                                    validate_fragment(row, value)
                                 self._db.execute(
                                     "INSERT INTO piece VALUES (?, ?, ?, ?)", (row, tag, line, value)
                                 )

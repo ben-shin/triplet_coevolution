@@ -21,6 +21,8 @@ Extraction makes a second pass over the chosen record. It spools only the reques
 
 Domain intervals are 1-based and inclusive. Their span must match the row's count of symbols other than `.` and `-`. A descending interval retains both endpoints in source order. Declaring `molecule="protein"` requires forward intervals. Missing or duplicate requested IDs, ambiguous aligned domain annotations and malformed row or feature lengths raise errors before output is replaced. For wrapped input, use a blank line between blocks, or restart each unseparated block at the first sequence of the preceding block.
 
+Each fragment of a wrapped `#=GC` or `#=GR` track must appear in the same block as its sequence columns and have that block's width. Blocks can have different widths. A track supplied on one line can appear separately and must span the full alignment. The inventory validates these positions for all tracks, including annotations on rows that will be discarded. During extraction, callers can pass `validate_fragment(row_id, text)` to check selected sequence symbols before publication.
+
 The Python working set scales with the longest input line, requested row IDs and optional returned reference string. Temporary disk usage scales with the row index, annotation metadata and selected sequence fragments. The caller can choose the index location with `temp_dir=`. Each extraction rescans its source record. Seeking to a later record in a gzip archive replays decompression up to that offset.
 
 ## Synthetic measurements
@@ -29,7 +31,7 @@ The following Windows measurements used Python 3.13.15. Each run generated a dis
 
 | Rows | Layout | Stored bytes | Uncompressed bytes | Peak process MiB |
 | ---: | --- | ---: | ---: | ---: |
-| 4,000 | gzip, 4 blocks | 78,764 | 8,333,680 | 28.3 |
+| 4,000 | gzip, 4 blocks | 78,764 | 8,333,680 | 28.5 |
 | 40,000 | gzip, 4 blocks | 771,613 | 83,477,681 | 30.0 |
 | 40,000 | plain, 1 block | 82,310,981 | 82,310,981 | 29.8 |
 
