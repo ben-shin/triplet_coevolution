@@ -329,3 +329,214 @@ def test_replicon_alternatives_and_duplicate_xrefs_in_new_and_legacy_snapshots(
     assert legacy["counts"] == live["counts"]
     assert replayed == records
     assert before == cache.read_bytes()
+
+
+def _identity_snapshot(path, lookups):
+    with closing(uniprot.Resolver(path, True)) as cache:
+        for key, proteins in lookups.items():
+            mappings = [
+                {
+                    "protein_id": protein,
+                    "entry_name": "DEMO_YEAST",
+                    "genome_id": "g",
+                    "proteome_id": "UP000002311",
+                    "assembly_id": "g",
+                    "source": "UniProtKB",
+                    "orthogroups": ["OrthoDB:5132116at2759"],
+                }
+                for protein in proteins
+            ]
+            cache._store(
+                key, {"mappings": mappings, "release": "fixture", "release_date": "Jan-2000"}
+            )
+        cache.db.commit()
+    return path
+
+
+@pytest.mark.parametrize(
+    ("name", "ac", "selectors", "lookups", "resolved", "decision"),
+    [
+        (
+            "DEMO_YEAST/1-20",
+            "P12345",
+            (),
+            {"DEMO_YEAST": ["P23456"]},
+            0,
+            "unlinked_reference_accession",
+        ),
+        (
+            "DEMO_YEAST/1-20",
+            "P12345",
+            (),
+            {"P12345": [], "DEMO_YEAST": ["P23456"]},
+            0,
+            "unlinked_reference_accession",
+        ),
+        (
+            "sp|P12345|DEMO_YEAST/1-20",
+            None,
+            (),
+            {"P12345": [], "DEMO_YEAST": ["P23456"]},
+            0,
+            "unlinked_reference_accession",
+        ),
+        (
+            "P23456/1-20",
+            "P12345",
+            (),
+            {"P12345": [], "P23456": ["P23456"]},
+            0,
+            "unlinked_reference_accession",
+        ),
+        (
+            "P23456/1-20",
+            "P12345",
+            (),
+            {"P12345": ["P23456"], "P23456": ["P23456"]},
+            1,
+            "reference_orthogroup",
+        ),
+        ("DEMO_YEAST/1-20", "P23456", (), {"DEMO_YEAST": ["P23456"]}, 1, "reference_orthogroup"),
+        (
+            "DEMO_YEAST/1-20",
+            "P23456",
+            (),
+            {"DEMO_YEAST": [], "P23456": ["P23456"]},
+            1,
+            "reference_orthogroup",
+        ),
+        (
+            "DEMO_YEAST/1-20",
+            "P23456-2",
+            (),
+            {"DEMO_YEAST": ["P23456"]},
+            0,
+            "unlinked_reference_accession",
+        ),
+        (
+            "DEMO_YEAST/1-20",
+            "P23456-2.4",
+            (),
+            {"DEMO_YEAST": ["P23456-2"]},
+            1,
+            "reference_orthogroup",
+        ),
+        (
+            "DEMO_YEAST/1-20",
+            None,
+            ("P12345",),
+            {"DEMO_YEAST": ["P23456"]},
+            1,
+            "reference_orthogroup",
+        ),
+        ("DEMO_YEAST/1-20", None, (), {"DEMO_YEAST": ["P23456"]}, 1, "reference_orthogroup"),
+        (
+            "P12345/1-20",
+            "P23456",
+            (),
+            {"P12345": ["P12345"], "P23456": ["P23456"]},
+            0,
+            "ambiguous_reference_orthology",
+        ),
+    ],
+)
+def test_authoritative_accession_sources_and_alias_selection(
+    tmp_path, monkeypatch, name, ac, selectors, lookups, resolved, decision
+):
+    cache = _identity_snapshot(tmp_path / "snapshot.sqlite", lookups)
+    monkeypatch.setattr(uniprot, "_request", lambda url: pytest.fail("offline network call"))
+    report, audit = _annotate(
+        tmp_path, "output", False, EvidenceRow(name, ac, selectors=selectors), cache
+    )
+    assert report["counts"]["resolved_groups"] == resolved
+    assert report["roles"]["A"]["source"] == decision
+    assert any(r["selected"] == "1" for r in audit) == bool(resolved)
+    if decision == "unlinked_reference_accession":
+        assert not report["roles"]["A"]["observed_anchor_orthogroups"]
+        assert any(
+            r["identity_status"] == "unlinked_accession" and json.loads(r["unlinked_accessions"])
+            for r in audit
+        )
+        assert any(
+            r["lookup_status"] == "unlinked_accession"
+            for r in report["roles"]["A"]["anchor_evidence"]
+        )
+    if ac is None and selectors:
+        assert not json.loads(audit[0]["declared_accessions"])
+    if name.startswith("sp|"):
+        assert "row_id" in json.loads(audit[0]["declared_accessions"])["P12345"]
+    if ac == "P12345" and lookups.get("P12345") == ["P23456"]:
+        witnesses = [w for r in audit for w in json.loads(r["accession_links"])["P12345"]]
+        assert any(w["proof"] == "verified_secondary" for w in witnesses)
+
+
+@pytest.mark.parametrize("secondary", [False, True])
+def test_verified_secondary_requires_its_own_lookup_and_replays(tmp_path, monkeypatch, secondary):
+    current = entry("P23456", "DEMO_YEAST", ["UP000002311"], ["5132116at2759"])
+    calls = []
+
+    def request(url):
+        parsed = urlsplit(url)
+        if parsed.path == "/proteomes/search":
+            return {
+                "results": [{"id": "UP000002311", "genomeAssembly": {"assemblyId": "g"}}]
+            }, HEADERS
+        query = parse_qs(parsed.query)["query"][0]
+        calls.append(query)
+        hits = (
+            [current]
+            if "id:DEMO_YEAST" in query or (secondary and "sec_acc:P12345" in query)
+            else []
+        )
+        return {"results": hits}, HEADERS
+
+    monkeypatch.setattr(uniprot, "_request", request)
+    cache = tmp_path / "closed.sqlite"
+    row = EvidenceRow("DEMO_YEAST/1-20", "P12345")
+    report, audit = _annotate(tmp_path, "initial", True, row, cache)
+    assert any("sec_acc:P12345" in q for q in calls)
+    assert report["counts"]["resolved_groups"] == int(secondary)
+    monkeypatch.setattr(uniprot, "_request", lambda url: pytest.fail("offline network call"))
+    replay, rows = _annotate(tmp_path, "replay", False, row, cache)
+    assert report["roles"] == replay["roles"]
+    assert audit == rows
+
+
+@pytest.mark.parametrize(
+    ("destinations", "accepted"),
+    [
+        (["P23456"], 1),
+        (["P23456", "P34567"], 0),
+        ([], 0),
+    ],
+)
+def test_curated_mnemonic_needs_accession_corroboration_without_importing_remote_roles(
+    tmp_path, monkeypatch, destinations, accepted
+):
+    cache = _identity_snapshot(tmp_path / "closed.sqlite", {"P12345": destinations})
+    source = tmp_path / "curated.tsv"
+    source.write_text(
+        "component\tidentifier\tprotein_id\tgenome_id\torthogroup\tsource\n"
+        "A\tDEMO_YEAST\tP23456\tg\tlocal:A\tcurated collection\n"
+        "B\tb\tprotein-b\tg\tlocal:B\tfixture\nC\tc\trna-c\tg\tlocal:C\tfixture\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(uniprot, "_request", lambda url: pytest.fail("offline network call"))
+    row = EvidenceRow("DEMO_YEAST/1-20", "P12345")
+    report = generate_evidence(
+        {"A": [row], "B": [EvidenceRow("b")], "C": [EvidenceRow("c")]},
+        tmp_path / "out",
+        manifest=source,
+        cache=cache,
+        uniprot_components={"A"},
+        reference_anchors={"A": "display"},
+        reference_rows={"A": row},
+        expected_orthogroups={"B": ["local:B"], "C": ["local:C"]},
+    )
+    assert report["counts"]["resolved_groups"] == accepted
+    anchor = report["roles"]["A"]
+    assert anchor["observed_anchor_orthogroups"] == (["local:A"] if accepted else [])
+    if accepted:
+        assert any(
+            r["lookup_status"] == "accession_verification_only" for r in anchor["anchor_evidence"]
+        )

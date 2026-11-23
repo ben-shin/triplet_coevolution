@@ -15,7 +15,9 @@ Run the following command from the repository root to collect offline evidence a
 triplet evidence --input input --out results/prepared
 ```
 
-You can start with the alignments alone. Each recognizable row enters the candidate inventory. A local `mappings.tsv`, a saved UniProt cache, or explicitly enabled UniProt lookups supply the evidence needed for matching. Rows with missing or conflicting evidence remain in `metadata/evidence.tsv`. A preparation with zero resolved groups still writes its audit.
+You can start with the alignments alone to inventory their rows. To obtain resolved groups, supply identity and genome or assembly evidence for the candidates, and identify each component's role using `expected_orthogroups` in `input/project.json` or a `reference_id` whose orthogroup the resolver can establish. A group needs one unambiguous, role-supported member from each family in the same genomic context. The [example project](../examples/families/project.json) shows the three role assignments.
+
+For an offline project, supply a root `mappings.tsv` following the [mapping example](../examples/families/mappings.tsv), or point the project to a previously saved UniProt cache for its protein components. Include curated locus mappings for DNA and RNA. Inspect `metadata/groups.tsv` for the selected groups and `metadata/evidence.tsv` for missing or conflicting evidence. A preparation with zero resolved groups still writes its audit.
 
 For three protein families, you can enable live UniProt lookups explicitly. For mixed families, declare the molecule in each folder's `component.json`, then use `--uniprot` without the default type. A `targets.txt` in any folder limits resolution to the identifiers you list there.
 

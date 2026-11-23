@@ -17,6 +17,7 @@ FIELDS = (
     "assembly_id",
     "proteome_id",
     "neighborhood_id",
+    "replicon_id",
 )
 EXPECTED = {c: [f"curated:{c}"] for c in "ABC"}
 
@@ -324,6 +325,160 @@ def test_taxon_only_and_conflicting_assembly_or_shared_molecule(tmp_path):
             assert reason in read(out / "groups.tsv")[0]["reasons"]
         else:
             assert all(r["group_status"] == "unplaced" for r in read(out / "evidence.tsv"))
+
+
+@pytest.mark.parametrize(
+    ("locus", "labels", "expected"),
+    [
+        ("region", ("chr1", "chr2", "chr1"), "conflicting_neighborhood_replicons"),
+        (
+            "region",
+            ("plasmid pA", "Chromosome I", "Chromosome I"),
+            "conflicting_neighborhood_replicons",
+        ),
+        ("", ("plasmid pA", "Chromosome I", "Chromosome I"), ""),
+        ("region", ("Chromosome I", "Chr 1", "chr1"), ""),
+        ("region", ("Chromosome I", "Chr 2", "chrI"), "conflicting_neighborhood_replicons"),
+        ("region", ("chr1", "NC_000001.1", "chr1"), "unverified_neighborhood_replicons"),
+        (
+            "region",
+            ("scaffold 1", "scaffold 2", "scaffold 1"),
+            "conflicting_neighborhood_replicons",
+        ),
+        ("region", ("chr1", "Unplaced scaffold", ""), ""),
+        ("region", ("plasmid pA", "plasmid pa", ""), "conflicting_neighborhood_replicons"),
+    ],
+)
+def test_named_neighborhood_requires_consistent_localized_replicons(
+    tmp_path, locus, labels, expected
+):
+    rows = [
+        (c, i, p, g, og, {**meta, "replicon_id": rep})
+        for (c, i, p, g, og, meta), rep in zip(complete(locus=locus), labels, strict=True)
+    ]
+    # Known orthogroup exclusion on another replicon cannot refute this neighborhood.
+    rows.append(
+        (
+            "A",
+            "excluded",
+            "wrong",
+            "g",
+            "curated:other",
+            {"neighborhood_id": locus, "replicon_id": "plasmid other"},
+        )
+    )
+    out = tmp_path / "out"
+    report = generate_evidence(
+        inventory(rows),
+        out,
+        manifest=manifest(tmp_path / "manifest.tsv", rows),
+        expected_orthogroups=EXPECTED,
+    )
+    assert report["counts"]["resolved_groups"] == int(not expected)
+    group = read(out / "groups.tsv")[0]
+    assert group["reasons"] == expected
+    assert group["status"] == ("ambiguous" if expected else "resolved")
+    assert {r["replicon_id"] for r in read(out / "evidence.tsv")} == {*labels, "plasmid other"}
+
+
+@pytest.mark.parametrize(
+    ("identifier", "protein", "resolved"),
+    [
+        ("DEMO_YEAST", "P23456", 0),
+        ("DEMO_YEAST", "P12345", 1),
+        ("P12345", "P23456", 1),
+        ("DEMO_YEAST/1-20", "P23456", 1),
+        ("unrelated_selector", "P23456", 0),
+    ],
+)
+def test_curated_molecule_link_must_cover_the_declared_accession(
+    tmp_path, identifier, protein, resolved
+):
+    rows = complete()[1:] + [("A", identifier, protein, "g", "curated:A", {})]
+    inv = inventory(rows)
+    row = EvidenceRow("DEMO_YEAST/1-20", accession="P12345", selectors=("unrelated_selector",))
+    inv["A"] = [row]
+    out = tmp_path / "out"
+    report = generate_evidence(
+        inv,
+        out,
+        manifest=manifest(tmp_path / "manifest.tsv", rows),
+        expected_orthogroups={"B": ["curated:B"], "C": ["curated:C"]},
+        reference_anchors={"A": "my display"},
+        reference_rows={"A": row},
+    )
+    assert report["counts"]["resolved_groups"] == resolved
+    assert report["roles"]["A"]["source"] == (
+        "reference_orthogroup" if resolved else "unlinked_reference_accession"
+    )
+    assert report["roles"]["A"]["declared_accessions"] == {"P12345": ["stockholm_accession"]}
+
+
+def test_missing_neighborhood_member_does_not_add_replicon_contradiction(tmp_path):
+    rows = [
+        (c, i, p, g, og, {**m, "replicon_id": "chr2" if c == "B" else "chr1"})
+        for c, i, p, g, og, m in complete(locus="local")
+    ]
+    inv = inventory(rows)
+    inv["B"] = [EvidenceRow("B1", present=False)]
+    generate_evidence(
+        inv,
+        tmp_path / "out",
+        manifest=manifest(tmp_path / "m.tsv", rows),
+        expected_orthogroups=EXPECTED,
+    )
+    group = read(tmp_path / "out" / "groups.tsv")[0]
+    assert group["status"] == "incomplete"
+    assert group["reasons"] == "B:absent_from_alignment"
+
+
+def test_unlinked_candidate_cannot_leak_conflicting_orthology_to_verified_same_interval(tmp_path):
+    rows = complete()[1:] + [
+        ("A", "DEMO_YEAST", "P23456", "g", "curated:wrong", {}),
+        ("A", "P23456", "P23456", "g", "curated:A", {}),
+        ("A", "seed", "seed", "other", "curated:A", {}),
+    ]
+    inv = inventory(rows)
+    inv["A"] = [EvidenceRow("DEMO_YEAST/1-20", "P12345"), EvidenceRow("P23456/1-20")]
+    out = tmp_path / "out"
+    report = generate_evidence(
+        inv,
+        out,
+        manifest=manifest(tmp_path / "map.tsv", rows),
+        expected_orthogroups={"B": ["curated:B"], "C": ["curated:C"]},
+        reference_anchors={"A": "seed"},
+    )
+    assert report["counts"]["resolved_groups"] == 1
+    audit = {r["sequence_id"]: r for r in read(out / "evidence.tsv")}
+    assert audit["P23456/1-20"]["role_status"] == "supported"
+    assert audit["DEMO_YEAST/1-20"]["role_status"] == "unlinked_accession"
+
+
+@pytest.mark.parametrize(("extra", "resolved"), [(False, 0), (True, 1)])
+def test_distinct_biological_reference_accession_needs_verified_link_even_for_exact_curated_row(
+    tmp_path, extra, resolved
+):
+    rows = complete() + [("A", "P12345/1-20", "local-protein", "g", "curated:A", {})]
+    if extra:
+        rows.append(("A", "P23456", "local-protein", "g", "curated:different-domain", {}))
+    inv = inventory(complete())
+    out = tmp_path / "out"
+    report = generate_evidence(
+        inv,
+        out,
+        manifest=manifest(tmp_path / "map.tsv", rows),
+        expected_orthogroups={"B": ["curated:B"], "C": ["curated:C"]},
+        reference_anchors={"A": "P23456"},
+        reference_rows={"A": EvidenceRow("P12345/1-20")},
+    )
+    assert report["counts"]["resolved_groups"] == resolved
+    assert report["roles"]["A"]["declared_accessions"] == {
+        "P12345": ["row_id"],
+        "P23456": ["reference_id"],
+    }
+    assert report["roles"]["A"]["source"] == (
+        "reference_orthogroup" if resolved else "unlinked_reference_accession"
+    )
 
 
 def test_missing_selector_unknown_position_and_no_anchor(tmp_path):

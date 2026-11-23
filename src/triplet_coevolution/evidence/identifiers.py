@@ -32,6 +32,28 @@ def lookup_id(token: str) -> str:
     return token if accession(token) or _ENTRY.fullmatch(token) else ""
 
 
+def explicit_accession(value: str | None) -> str:
+    """Read a biological accession, preserving an isoform suffix and ignoring a domain range."""
+    token = _DOMAIN.sub(r"\1", value or "")
+    fields = token.split("|")
+    if len(fields) == 3 and fields[0].lower() in {"sp", "tr"}:
+        token = fields[1]
+    token = lookup_id(token)
+    return token if accession(token) else ""
+
+
+def declared_accessions(row, reference_id=None):
+    sources = {}
+    for field, value in (
+        ("row_id", row.row_id),
+        ("stockholm_accession", row.accession),
+        ("reference_id", reference_id),
+    ):
+        if identifier := explicit_accession(value):
+            sources.setdefault(identifier, []).append(field)
+    return sources
+
+
 def identifiers(
     row: EvidenceRow,
 ) -> tuple[tuple[str, ...], tuple[str, ...], int | None, int | None]:

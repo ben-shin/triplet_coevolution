@@ -33,7 +33,7 @@ If you already have three Stockholm families, put each file in a separate folder
 triplet evidence --input input --out results/prepared
 ```
 
-The command prepares data and records missing, contested and resolved matches. With sufficient evidence, molecule types and coordinate references, it also writes arguments for replay with `triplet analyze`. Read the [three-folder guide](docs/families.md) for `targets.txt`, offline mappings and caches, or opt-in live UniProt resolution.
+With the three alignments alone, the command inventories the rows. To resolve a triplet, it needs evidence for each candidate's identity and genomic context, plus expected orthogroups or annotated reference anchors that distinguish the three roles. One unambiguous member must fill each role. Once matches, molecule types and coordinate references are available, the pipeline also writes arguments for replay with `triplet analyze`. The [three-folder guide](docs/families.md) covers curated mappings for proteins, DNA or RNA, saved caches, optional live UniProt lookups for proteins and the candidate audit.
 
 Run the bundled example from the repository root with the environment active. Each command takes a JSON configuration. Paths inside it are relative to that file.
 
