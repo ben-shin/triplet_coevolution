@@ -6,7 +6,7 @@ import itertools
 import json
 import re
 import sqlite3
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 from urllib.parse import quote
 
@@ -17,6 +17,8 @@ from .identifiers import (
     identifiers,
     lookup_id,
 )
+from .nucleotide import ASSEMBLY, ENA, NCBI, RNACENTRAL, SUMMARY, NucleotideResolver, nucleotide_key
+from .stockholm import local_placement, nucleotide_facts
 from .uniprot import Resolver
 
 COMPONENTS = ("A", "B", "C")
@@ -70,6 +72,16 @@ AUDIT_FIELDS = (
     "accession_links",
     "unlinked_accessions",
     "identity_status",
+    "molecule_type",
+    "nucleotide_accession",
+    "genomic_start",
+    "genomic_end",
+    "genomic_strand",
+    "placement_source",
+    "organism_name",
+    "provider_error",
+    "assembly_aliases",
+    "stockholm_annotations",
 )
 
 
@@ -77,6 +89,7 @@ def _database(db):
     db.executescript("""
         CREATE TABLE manifest (comp TEXT, identifier TEXT, mapping TEXT);
         CREATE INDEX manifest_key ON manifest(comp,identifier);
+        CREATE TABLE row_tags (row_key INTEGER PRIMARY KEY, tags TEXT);
         CREATE TABLE rows (id INTEGER PRIMARY KEY, comp TEXT, name TEXT, accession TEXT,
             start INTEGER, end INTEGER, present INTEGER, selectors TEXT, anchor INTEGER,
             declared TEXT, identity_status TEXT DEFAULT '',
@@ -191,6 +204,13 @@ def _lookup_facts(queries, results, resolver):
             yield query, {}, "cache_miss" if resolver.cache_name else "no_curated_mapping"
             continue
         payload = results[query]
+        if "provider_error" in payload:
+            yield (
+                query,
+                {"source": "UniProtKB", "provider_error": payload["provider_error"]},
+                "provider_unavailable",
+            )
+            continue
         stamp = {k: payload.get(k, "") for k in ("release", "release_date", "fetched_at")}
         if not payload["mappings"]:
             yield query, {"source": "UniProtKB", **stamp}, "uniprot_not_found"
@@ -214,7 +234,22 @@ def _accession_links(declared, row_id, facts):
                 proof = "matching_primary"
             elif curated and explicit_accession(lookup) == ac:
                 proof = "curated_accession"
-            elif not curated and lookup == ac and "-" not in ac:
+            elif (
+                source == "Stockholm"
+                and mapping.get("source_type") == "stockholm"
+                and "LOCUS" in {tag.upper() for tag, _ in mapping.get("stockholm_annotations", ())}
+                and len(
+                    [
+                        a
+                        for a, fields in declared.items()
+                        if {"row_id", "stockholm_accession"} & set(fields)
+                    ]
+                )
+                == 1
+                and {"row_id", "stockholm_accession"} & set(origins)
+            ):
+                proof = "stockholm_locus"
+            elif source == "UniProtKB" and not curated and lookup == ac and "-" not in ac:
                 # The resolver associates a different current accession only after an
                 # accession-specific secondary-ID lookup, including in older snapshots.
                 proof = "verified_secondary"
@@ -264,15 +299,43 @@ def _save_facts(db, key, row_id, declared, facts, verification):
         _append(db, key, lookup, mapping, status or "accession_verification_only")
 
 
-def _collect(db, comp, records, resolver, allow_uniprot, *, anchor=False, reference_id=None):
+def _collect(
+    db,
+    comp,
+    records,
+    resolver,
+    allow_uniprot,
+    *,
+    anchor=False,
+    reference_id=None,
+    molecule=None,
+    family=None,
+    nucleotides=None,
+):
     records = iter(records)
     while chunk := tuple(itertools.islice(records, 128)):
         pending = []
+        nuc_pending = []
+        annotations = {}
         for row in chunk:
             if not row.row_id or any(c.isspace() for c in row.row_id):
                 raise ValueError(f"empty or invalid {comp} alignment identifier {row.row_id!r}")
             aliases, remote, start, end = identifiers(row)
-            declared = declared_accessions(row, reference_id)
+            if nucleotides and row.start is None and start is not None:
+                row = EvidenceRow(
+                    row.row_id,
+                    row.accession,
+                    start,
+                    end,
+                    getattr(row, "present", True),
+                    getattr(row, "selectors", ()),
+                    getattr(row, "annotations", ()),
+                )
+            declared = (
+                {}
+                if nucleotides and molecule in {"rna", "dna"}
+                else declared_accessions(row, reference_id)
+            )
             aliases = tuple(dict.fromkeys((*aliases, *declared)))
             # Include a pipe header's embedded mnemonic as a cross-check. Its lookup
             # can reveal an obsolete or conflicting name but cannot override the accession.
@@ -295,6 +358,67 @@ def _collect(db, comp, records, resolver, allow_uniprot, *, anchor=False, refere
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"duplicate {comp} alignment identifier {row.row_id!r}") from exc
             curated, verification = _curated(db, comp, row.row_id, aliases, declared)
+            if nucleotides:
+                nuc, embedded, meta = local_placement(row, molecule, family)
+                ref_key = (
+                    nucleotide_key(
+                        reference_id, allow_ambiguous=bool(family and family.startswith("RF"))
+                    )
+                    if molecule in {"dna", "rna"}
+                    else ""
+                )
+                if (
+                    ref_key
+                    and nuc
+                    and ref_key != nuc
+                    and not (
+                        ("." not in ref_key and ref_key == nuc.split(".")[0])
+                        or (ref_key.startswith("URS") and ref_key == nuc.split("_")[0])
+                    )
+                ):
+                    embedded = [(row.row_id, meta, "conflicting_reference_nucleotide_identifier")]
+                annotations[key] = meta
+                if getattr(row, "annotations", ()):
+                    db.execute(
+                        "INSERT INTO row_tags VALUES (?,?)", (key, json.dumps(row.annotations))
+                    )
+                if not curated and embedded:
+                    _save_facts(db, key, row.row_id, declared, embedded, [])
+                    continue
+                if not curated and nuc:
+                    nuc_pending.append((key, row, nuc, meta))
+                    continue
+                if not curated and not allow_uniprot:
+                    status = (
+                        "missing_nucleotide_identifier"
+                        if molecule in {"dna", "rna"}
+                        else "unknown_molecule"
+                    )
+                    _append(db, key, row.row_id, meta, status)
+                    continue
+                if allow_uniprot:
+                    # Send only confirmed public identifier syntax from the actual record.
+                    # A local row name or arbitrary user-supplied selector is not a query.
+                    tokens = []
+                    for source in (row.row_id, row.accession):
+                        if not source:
+                            continue
+                        original = re.sub(r"/\d+-\d+$", "", source)
+                        parts = original.split("|")
+                        tokens.extend(
+                            parts[1:]
+                            if len(parts) == 3 and parts[0].lower() in {"sp", "tr"}
+                            else [original]
+                        )
+                    remote = {
+                        lookup_id(a)
+                        for a in tokens
+                        if explicit_accession(a) or re.fullmatch(r"[A-Z0-9]{1,16}_[A-Z0-9]{3,5}", a)
+                    }
+                    remote.discard("")
+                    if any(nucleotide_key(a) for a in (row.row_id, row.accession)):
+                        remote = set()
+                        declared = {}
             if curated:
                 # Preserve curated feature assignments. Allow exact accession-to-molecule
                 # verification for aliases without an independently documented link.
@@ -310,16 +434,40 @@ def _collect(db, comp, records, resolver, allow_uniprot, *, anchor=False, refere
                 )
             else:
                 reason = "no_curated_mapping" if not allow_uniprot else "unrecognized_identifier"
-                _append(db, key, row.row_id, {}, reason)
+                _append(db, key, row.row_id, annotations.get(key, {}), reason)
+        if nuc_pending:
+            results = nucleotides.resolve(nuc for _, _, nuc, _ in nuc_pending)
+            for key, row, nuc, meta in nuc_pending:
+                _save_facts(
+                    db, key, row.row_id, {}, nucleotide_facts(row, nuc, results[nuc], meta), []
+                )
         results = resolver.resolve(query for *_, queries in pending for query in queries)
         for key, row_id, declared, curated, verification, queries in pending:
             looked_up = list(_lookup_facts(queries, results, resolver))
+            meta = annotations.get(key, {})
+            facts = []
+            for token, mapping, status in curated or looked_up:
+                if (
+                    not status
+                    and meta.get("taxon_id")
+                    and mapping.get("taxon_id")
+                    and meta["taxon_id"] != mapping["taxon_id"]
+                ):
+                    status = "conflicting_stockholm_taxa"
+                mapped = {**meta, **mapping}
+                if mapping.get("source") == "UniProtKB" and mapping.get("source_type") != "curated":
+                    mapped.update(source_type="uniprot", placement_source="UniProtKB Proteomes")
+                if not curated and not status and meta.get("orthogroups"):
+                    mapped["orthogroups"] = sorted(
+                        set(meta["orthogroups"]) | set(mapped.get("orthogroups", ()))
+                    )
+                facts.append((token, mapped, status))
             _save_facts(
                 db,
                 key,
                 row_id,
                 declared,
-                curated or looked_up,
+                facts,
                 [*verification, *looked_up] if curated else [],
             )
 
@@ -438,6 +586,88 @@ def _namespace(group):
     return (group.partition(":")[0] if ":" in group else "", "")
 
 
+def _automatic_roles(db, expected, decisions, profiles, scope):
+    """Learn distinguishable memberships from independent genome placements before classifying."""
+    for comp, profile in profiles.items():
+        if (
+            comp not in COMPONENTS
+            or profile is not None
+            and not re.fullmatch(r"(PF|RF)\d{5}", profile)
+        ):
+            raise ValueError(f"invalid automatic family profile {comp!r}: {profile!r}")
+    db.create_function(
+        "orthology_namespace", 1, lambda g: json.dumps(_namespace(g)), deterministic=True
+    )
+    db.executescript("""
+        CREATE TEMP TABLE family_groups AS
+        WITH placements AS (
+            SELECT a.*,r.comp,r.present,r.identity_status,
+                   count(*) OVER (PARTITION BY row_key) AS n
+            FROM assignments a JOIN rows r ON r.id=a.row_key WHERE r.anchor=0
+        ), conflicting_proteins AS (
+            SELECT comp,protein FROM placements GROUP BY comp,protein
+            HAVING count(DISTINCT genome)>1 OR count(DISTINCT locus)>1
+        )
+        SELECT DISTINCT p.comp,p.genome,j.value AS membership,orthology_namespace(j.value) AS ns
+        FROM placements p, json_each(p.groups_json) j
+        LEFT JOIN conflicting_proteins x ON x.comp=p.comp AND x.protein=p.protein
+        WHERE p.n=1 AND p.present=1 AND p.identity_status='' AND p.protein!='' AND p.genome!=''
+          AND x.protein IS NULL AND json_array_length(p.replicons_json)<=1;
+        CREATE INDEX family_membership ON family_groups(membership,comp);
+        CREATE INDEX family_namespace ON family_groups(comp,ns);
+    """)
+    profile_roles, disagreement = {}, set()
+    for comp in COMPONENTS:
+        profile = profiles.get(comp)
+        distinct_profile = profile and list(profiles.values()).count(profile) == 1
+        decision = decisions[comp]
+        decision["family_profile"] = profile
+        if decision["source"] != "no_role_anchor":
+            continue
+        # An explicit taxonomic scope asks for orthology evidence at that level.
+        profile_roles[comp] = profile if distinct_profile and scope is None else None
+        witnesses = []
+        shared = competing = 0
+        for ns, different, genomes, membership in db.execute(
+            """
+            SELECT ns,count(DISTINCT membership),count(DISTINCT genome),min(membership)
+            FROM family_groups WHERE comp=? GROUP BY ns ORDER BY ns
+        """,
+            (comp,),
+        ):
+            if scope and json.loads(ns) != ["OrthoDB", scope]:
+                continue
+            if different > 1:
+                competing += 1
+                continue
+            if db.execute(
+                "SELECT 1 FROM family_groups WHERE membership=? AND comp!=? LIMIT 1",
+                (membership, comp),
+            ).fetchone():
+                shared += 1
+                continue
+            if genomes >= 2:
+                witnesses.append({"orthogroup": membership, "distinct_genomes": genomes})
+        if competing or shared:
+            disagreement.add(comp)
+        expected[comp] = {w["orthogroup"] for w in witnesses}
+        decision.update(
+            {
+                "source": "family_orthogroup_consensus"
+                if witnesses
+                else "family_profile"
+                if profile_roles[comp]
+                else "no_distinguishing_role",
+                "orthogroups": sorted(expected[comp]),
+                "consensus_evidence": witnesses,
+                "competing_namespaces": competing,
+                "shared_memberships": shared,
+                "distinct_family_profile": bool(distinct_profile),
+            }
+        )
+    return profile_roles, disagreement
+
+
 def _role_status(found, expected):
     if not expected:
         return "no_role_anchor"
@@ -458,7 +688,7 @@ def _group_id(genome, locus):
     return quote(genome, safe="") + ("@" + quote(locus, safe="") if locus else "") if genome else ""
 
 
-def _classify(db, expected):
+def _classify(db, expected, profile_roles, disagreement):
     distinguishing = {
         c: expected[c] - set().union(*(expected[other] for other in COMPONENTS if other != c))
         for c in COMPONENTS
@@ -483,6 +713,13 @@ def _classify(db, expected):
         reason = _role_status(groups, expected[comp])
         if reason == "supported" and not groups & distinguishing[comp]:
             reason = "overlapping_role_orthology"
+        if profile_roles.get(comp) and reason in ("missing_orthology", "no_role_anchor"):
+            if groups & set().union(*(expected[c] for c in COMPONENTS if c != comp)):
+                reason = "overlapping_role_orthology"
+            else:
+                # Conflicting family evidence cannot be rescued by an
+                # unannotated row. Missing or singleton evidence can.
+                reason = "unresolved_family_orthology" if comp in disagreement else "profile_member"
         if n > 1:
             reason = "multiple_mappings"
         elif reason != "orthogroup_mismatch" and len(json.loads(raw_replicons)) > 1:
@@ -583,7 +820,7 @@ def _summarize_groups(db):
         for comp, n, available, unresolved, distinct_proteins, protein in db.execute(
             """
             SELECT comp,COUNT(DISTINCT row_key),COUNT(DISTINCT CASE WHEN present THEN row_key END),
-            MAX(reason!='supported'),COUNT(DISTINCT protein),MIN(protein) FROM candidates
+            MAX(reason NOT IN ('supported','profile_member')),COUNT(DISTINCT protein),MIN(protein) FROM candidates
             WHERE group_id=? AND reason!='orthogroup_mismatch' GROUP BY comp""",
             (gid,),
         ):
@@ -594,7 +831,7 @@ def _summarize_groups(db):
                 reasons.add(f"{comp}:absent_from_alignment")
             if unresolved:
                 codes = db.execute(
-                    "SELECT DISTINCT reason FROM candidates WHERE group_id=? AND comp=? AND reason NOT IN ('supported','orthogroup_mismatch')",
+                    "SELECT DISTINCT reason FROM candidates WHERE group_id=? AND comp=? AND reason NOT IN ('supported','profile_member','orthogroup_mismatch')",
                     (gid, comp),
                 )
                 reasons.update(f"{comp}:{code}" for (code,) in codes)
@@ -612,7 +849,7 @@ def _summarize_groups(db):
             for comp, raw in db.execute(
                 """SELECT c.comp,a.replicons_json FROM candidates c
                 JOIN assignments a USING(row_key,protein,genome,locus)
-                WHERE c.group_id=? AND c.present AND c.reason='supported'""",
+                WHERE c.group_id=? AND c.present AND c.reason IN ('supported','profile_member')""",
                 (gid,),
             ):
                 if counts[comp] == 1:
@@ -648,6 +885,7 @@ def _summarize_groups(db):
             "multiple_replicon_annotations",
             "orthology_conflict",
             "overlapping_role_orthology",
+            "unresolved_family_orthology",
             "conflicting_taxa",
             "conflicting_assemblies",
             "conflicting_neighborhood_replicons",
@@ -708,6 +946,12 @@ def _audit_rows(db, names):
         confidence = "uncertain"
         if role == "orthogroup_mismatch":
             confidence = "role_excluded"
+        elif gstatus == "resolved" and role == "profile_member":
+            confidence = (
+                "neighborhood_and_family_profile"
+                if data.get("neighborhood_id")
+                else "genome_and_family_profile"
+            )
         elif gstatus == "resolved" and role == "supported":
             confidence = (
                 "neighborhood_and_role_supported"
@@ -718,7 +962,7 @@ def _audit_rows(db, names):
             gid,
             gstatus or "unplaced",
             greasons or "",
-            int(gstatus == "resolved" and role == "supported"),
+            int(gstatus == "resolved" and role in ("supported", "profile_member")),
             comp,
             names.get(comp, comp),
             row,
@@ -763,7 +1007,64 @@ def _audit_rows(db, names):
             mstatus
             if mstatus == "unlinked_accession"
             else issue or ("mapped" if not mstatus else mstatus),
+            *[
+                data.get(k, "")
+                for k in (
+                    "molecule_type",
+                    "nucleotide_accession",
+                    "genomic_start",
+                    "genomic_end",
+                    "genomic_strand",
+                    "placement_source",
+                    "organism_name",
+                    "provider_error",
+                )
+            ],
+            json.dumps(data.get("assembly_aliases", [])),
+            json.dumps(data.get("stockholm_annotations", [])),
         )
+
+
+def _assembly_aliases(db, resolver):
+    """Join counterpart assembly names only with version-specific NCBI pairing evidence."""
+    if not db.execute("SELECT 1 FROM mappings WHERE genome LIKE 'GCA_%' LIMIT 1").fetchone():
+        return
+    db.execute(
+        "CREATE TEMP TABLE refseq_targets AS SELECT rowid AS entry,genome FROM mappings WHERE genome LIKE 'GCF_%'"
+    )
+    db.execute("CREATE INDEX refseq_target_key ON refseq_targets(genome)")
+    targets = (
+        g
+        for (g,) in db.execute("SELECT DISTINCT genome FROM refseq_targets ORDER BY genome")
+        if ASSEMBLY.fullmatch(g)
+    )
+    while chunk := tuple(itertools.islice(targets, 30)):
+        for original, relation in resolver.assembly_pairs(chunk).items():
+            canonical = relation.get("canonical")
+            if not canonical:
+                continue
+            for entry, raw in db.execute(
+                "SELECT t.entry,m.raw FROM refseq_targets t JOIN mappings m ON m.rowid=t.entry WHERE t.genome=?",
+                (original,),
+            ):
+                data = json.loads(raw)
+                data.update(
+                    genome_id=canonical,
+                    assembly_id=canonical,
+                    assembly_aliases=[original, canonical],
+                )
+                data["cross_references"] = [
+                    *data.get("cross_references", ()),
+                    {
+                        "source": "NCBI Datasets",
+                        "paired_assembly": relation["paired_record"],
+                        "reported_assembly": original,
+                    },
+                ]
+                db.execute(
+                    "UPDATE mappings SET genome=?,raw=? WHERE rowid=?",
+                    (canonical, json.dumps(data, sort_keys=True), entry),
+                )
 
 
 def generate_evidence(
@@ -779,6 +1080,11 @@ def generate_evidence(
     reference_anchors=None,
     reference_rows=None,
     orthology_scope: str | None = None,
+    automatic_profiles=None,
+    automatic=False,
+    molecule_types=None,
+    nucleotide_cache=None,
+    nucleotide_online=False,
 ):
     """Write into the caller's staging metadata directory; return evidence_summary.json content."""
     if set(rows) != set(COMPONENTS):
@@ -796,16 +1102,29 @@ def generate_evidence(
     ) - set(COMPONENTS):
         raise ValueError("unknown evidence component; expected A, B or C")
     out_dir.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect("")) as db, closing(Resolver(cache, uniprot)) as resolver:
+    with (
+        closing(sqlite3.connect("")) as db,
+        closing(Resolver(cache, uniprot, audit_errors=automatic)) as resolver,
+        (
+            closing(NucleotideResolver(nucleotide_cache, nucleotide_online))
+            if automatic
+            else nullcontext()
+        ) as nucleotides,
+    ):
         _database(db)
         identity = _load_manifest(db, manifest)
         for comp in COMPONENTS:
-            _collect(db, comp, rows[comp], resolver, comp in protein_components)
+            options = {
+                "molecule": (molecule_types or {}).get(comp),
+                "family": (automatic_profiles or {}).get(comp),
+                "nucleotides": nucleotides if automatic else None,
+            }
+            _collect(db, comp, rows[comp], resolver, comp in protein_components, **options)
             if (ref := (reference_anchors or {}).get(comp)) and not (
                 expected_orthogroups or {}
             ).get(comp):
                 occurrence = db.execute(
-                    "SELECT accession,start,end,selectors FROM rows WHERE comp=? AND name=?",
+                    "SELECT accession,start,end,selectors,coalesce(tags,'[]') FROM rows LEFT JOIN row_tags ON id=row_key WHERE comp=? AND name=?",
                     (comp, ref),
                 ).fetchone()
                 anchor = (
@@ -815,6 +1134,7 @@ def generate_evidence(
                         occurrence[1],
                         occurrence[2],
                         selectors=tuple(json.loads(occurrence[3])),
+                        annotations=tuple(tuple(pair) for pair in json.loads(occurrence[4])),
                     )
                     if occurrence
                     else EvidenceRow(ref)
@@ -828,27 +1148,48 @@ def generate_evidence(
                     comp in protein_components,
                     anchor=True,
                     reference_id=ref,
+                    **options,
                 )
+        if automatic:
+            _assembly_aliases(db, nucleotides)
         _reconcile_intervals(db)
         expected, decisions = _role_expectations(
             db, expected_orthogroups, reference_anchors, orthology_scope
         )
         for comp, name in db.execute("SELECT comp,name FROM rows WHERE anchor=1"):
             decisions[comp]["reference_row_id"] = name
-        _classify(db, expected)
+        profile_roles, disagreement = {}, set()
+        if automatic_profiles is not None:
+            profile_roles, disagreement = _automatic_roles(
+                db, expected, decisions, automatic_profiles, orthology_scope
+            )
+        _classify(db, expected, profile_roles, disagreement)
         _summarize_groups(db)
+        db.executescript("""
+            CREATE TEMP TABLE tiers AS SELECT g.group_id, CASE
+                WHEN g.status!='resolved' THEN ''
+                WHEN max(c.reason='profile_member') THEN 'profile_membership_included'
+                ELSE 'orthogroup_supported' END AS role_evidence
+            FROM groups g JOIN candidates c USING(group_id) GROUP BY g.group_id;
+            CREATE UNIQUE INDEX tiers_group ON tiers(group_id);
+        """)
+        tier_fields = ("role_evidence",) if automatic_profiles is not None else ()
+        tier_column = ",t.role_evidence" if tier_fields else ""
         _write_table(
             out_dir / "groups.tsv",
-            GROUP_FIELDS,
-            db.execute("SELECT * FROM groups ORDER BY group_id"),
+            GROUP_FIELDS + tier_fields,
+            db.execute(
+                f"SELECT g.*{tier_column} FROM groups g JOIN tiers t USING(group_id) ORDER BY group_id"
+            ),
         )
         _write_table(out_dir / "evidence.tsv", AUDIT_FIELDS, _audit_rows(db, names))
         _write_table(
             out_dir / "selected_evidence.tsv",
-            SELECTED_FIELDS,
-            db.execute("""
-            SELECT g.group_id,r.comp,r.name,g.genome,g.locus FROM groups g JOIN candidates c USING(group_id)
-            JOIN rows r ON r.id=c.row_key WHERE g.status='resolved' AND c.reason='supported'
+            SELECTED_FIELDS + tier_fields,
+            db.execute(f"""
+            SELECT g.group_id,r.comp,r.name,g.genome,g.locus{tier_column} FROM groups g JOIN candidates c USING(group_id)
+            JOIN tiers t USING(group_id) JOIN rows r ON r.id=c.row_key
+            WHERE g.status='resolved' AND c.reason IN ('supported','profile_member')
             ORDER BY g.group_id,r.comp"""),
         )
         statuses = dict(db.execute("SELECT status,COUNT(*) FROM groups GROUP BY status"))
@@ -876,11 +1217,46 @@ def generate_evidence(
             },
             "tables": ["evidence.tsv", "selected_evidence.tsv", "groups.tsv"],
         }
+        if automatic_profiles is not None:
+            summary["role_evidence_counts"] = dict(
+                db.execute("""
+                SELECT role_evidence,count(*) FROM tiers WHERE role_evidence!='' GROUP BY role_evidence
+            """)
+            )
         if cache and cache.is_file():
             with cache.open("rb") as stream:
                 summary["resolver"]["cache_sha256"] = hashlib.file_digest(
                     stream, "sha256"
                 ).hexdigest()
+        if automatic:
+            failures = dict(nucleotides.failures)
+            if resolver.failure:
+                failures["UniProtKB"] = resolver.failure
+            snapshot = {
+                "cache": nucleotide_cache.name if nucleotide_cache else None,
+                "online": nucleotide_online,
+                "counts": dict(nucleotides.stats),
+                "cache_schema": 1,
+                "endpoints": {
+                    "ENA Portal sequence metadata": ENA,
+                    "NCBI nuccore ESummary": SUMMARY,
+                    "NCBI Datasets genome": NCBI,
+                    "RNAcentral genome-locations": RNACENTRAL,
+                },
+            }
+            if nucleotide_cache and nucleotide_cache.is_file():
+                with nucleotide_cache.open("rb") as stream:
+                    snapshot["cache_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+            attempts = dict(
+                db.execute("""SELECT status,COUNT(DISTINCT row_key) FROM mappings m
+                    JOIN rows r ON r.id=m.row_key WHERE r.anchor=0 AND status!='' GROUP BY status""")
+            )
+            summary["providers"] = {
+                "status": "partial" if failures else "complete",
+                "failures": failures,
+                "nucleotide": snapshot,
+                "lookup_status_counts": attempts,
+            }
         with (out_dir / "evidence_summary.json").open("x", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
             handle.write("\n")

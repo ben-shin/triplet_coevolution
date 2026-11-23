@@ -10,6 +10,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import typer
 
 from triplet_coevolution import __version__
@@ -134,6 +135,26 @@ def _row_count(path: Path, fmt: str) -> int:
         rows = csv.reader(handle, delimiter="\t" if fmt == "tsv" else ",")
         next(rows)  # Header is present even when there are no qualifying pairs.
         return sum(1 for _ in rows)
+
+
+def _site_masks(path, components):
+    """Map a prespecified panel to the unchanged input alignment coordinate systems."""
+    masks = {c.name: np.zeros(c.n_sites, dtype=bool) for c in components}
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter="\t", strict=True)
+        if reader.fieldnames != ["component", "original_column"]:
+            raise ValueError("site panel requires a TSV header: component, original_column")
+        for row in reader:
+            name, col = row["component"], row["original_column"]
+            if None in row or name not in masks or not col or not col.isascii() or not col.isdigit():
+                raise ValueError(f"invalid site panel record on line {reader.line_num}")
+            index = int(col) - 1
+            if not 0 <= index < len(masks[name]) or masks[name][index]:
+                raise ValueError(f"duplicate or out-of-range site panel column {name} {col}")
+            masks[name][index] = True
+    if any(not mask.any() for mask in masks.values()):
+        raise ValueError("site panel must include at least one original column per component")
+    return tuple(masks[c.name] for c in components)
 
 
 @app.command("analyze")
@@ -264,6 +285,9 @@ def analyze(
     a_strand: Annotated[str, typer.Option("--a-strand", help="Reference coordinate direction (+ or -).")] = "+",
     b_strand: Annotated[str, typer.Option("--b-strand", help="Reference coordinate direction (+ or -).")] = "+",
     c_strand: Annotated[str, typer.Option("--c-strand", help="Reference coordinate direction (+ or -).")] = "+",
+    site_panel: Annotated[
+        Path | None, typer.Option("--site-panel", help="TSV of component and 1-based original_column to intersect with quality masks.")
+    ] = None,
 ) -> None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     try:
@@ -313,7 +337,8 @@ def analyze(
             key: path.expanduser()
             for key, path in zip(("A", "B", "C", "matches"), (a, b, c, matches))
         }
-        for key, path in (("triplet_candidates", triplet_candidates), ("contacts", contacts)):
+        for key, path in (("triplet_candidates", triplet_candidates), ("contacts", contacts),
+                          ("site_panel", site_panel)):
             if path is not None:
                 paths[key] = path.expanduser()
         stamps = {key: _file_stamp(path) for key, path in paths.items()}
@@ -323,6 +348,7 @@ def analyze(
             for name, molecule in zip(("A", "B", "C"), (a_type, b_type, c_type))
         )
         table = read_triplet_table(paths["matches"])
+        panel_masks = _site_masks(paths["site_panel"], original) if site_panel is not None else None
         strata = None
         if strata_column is not None:
             if strata_column not in table.extra_columns:
@@ -352,6 +378,8 @@ def analyze(
             "max_missing_fraction": max_missing_fraction,
         }
         keep = tuple(column_mask(part, **mask_options) for part in qc.components)
+        if panel_masks is not None:
+            keep = tuple(usable & selected for usable, selected in zip(keep, panel_masks))
         for part, mask in zip(qc.components, keep):
             if not mask.any():
                 raise ValueError(

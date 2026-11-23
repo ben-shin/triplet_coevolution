@@ -14,10 +14,13 @@ from io import TextIOWrapper
 from itertools import chain
 from pathlib import Path
 
+from triplet_coevolution.core.alphabets import CANONICAL
 from triplet_coevolution.evidence.identifiers import identifiers
 
 _HEADER = b"# STOCKHOLM 1.0"
 _DOMAIN = re.compile(r"(.+)/([0-9]+)-([0-9]+)$")
+_PROTEIN = CANONICAL["protein"].encode("ascii")
+_TRANSCRIBE = str.maketrans("Tt", "Uu")
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,7 @@ class StockholmRow:
     accession: str | None
     start: int | None
     end: int | None
+    annotations: tuple[tuple[str, str], ...] = ()
 
 
 @contextmanager
@@ -165,11 +169,15 @@ def _check_feature_blocks(db):
 def _index(db, stream, allow_reverse):
     db.executescript("""
         CREATE TABLE track (row_id TEXT, tag TEXT, first_line INTEGER, section INTEGER,
-            columns INTEGER, occupied INTEGER, fragments INTEGER,
+            columns INTEGER, occupied INTEGER, fragments INTEGER, amino INTEGER, acg INTEGER,
+            thymine INTEGER, uracil INTEGER,
             PRIMARY KEY (row_id, tag)) WITHOUT ROWID;
         CREATE TABLE gs (row_id TEXT PRIMARY KEY, accession TEXT) WITHOUT ROWID;
+        CREATE TABLE gs_values (row_id TEXT, tag TEXT, value TEXT);
+        CREATE INDEX gs_values_key ON gs_values(row_id);
         CREATE TABLE rows (ordinal INTEGER PRIMARY KEY, row_id TEXT UNIQUE, base TEXT,
-            accession TEXT, start INTEGER, end INTEGER);
+            accession TEXT, start INTEGER, end INTEGER, amino INTEGER, acg INTEGER,
+            thymine INTEGER, uracil INTEGER);
         CREATE INDEX on_base ON rows(base);
         CREATE TABLE alias (name TEXT, row_id TEXT, PRIMARY KEY (name, row_id)) WITHOUT ROWID;
         CREATE TABLE sequence_block (section INTEGER PRIMARY KEY, columns INTEGER);
@@ -177,6 +185,7 @@ def _index(db, stream, allow_reverse):
             columns INTEGER);
     """)
     gf = {}
+    types, symbols = set(), set()
     section = sequence_sections = count_in_section = 0
     first_row = section_width = None
     for line, kind, row, tag, value in _events(stream):
@@ -184,6 +193,8 @@ def _index(db, stream, allow_reverse):
             section += 1
             first_row, count_in_section = None, 0
         elif kind == "#=GF":
+            if tag == "TP" and value.strip().casefold() in ("protein", "dna", "rna"):
+                types.add(value.strip().casefold())
             if tag in ("SQ", "ID", "AC"):
                 if not value or len(value.split()) != 1 or tag in gf:
                     raise ValueError(f"invalid or repeated #=GF {tag} at record line {line}")
@@ -203,8 +214,10 @@ def _index(db, stream, allow_reverse):
             )
             if not updated.rowcount:
                 raise ValueError(f"conflicting #=GS AC values for {row!r}")
+            if tag != "AC":
+                db.execute("INSERT INTO gs_values VALUES (?, ?, ?)", (row, tag, value))
         else:
-            occupied = 0
+            occupied = amino = acg = thymine = uracil = 0
             if kind == "sequence":
                 # Some writers restart at the first row without a blank separator.
                 if row == first_row and count_in_section >= 2:
@@ -220,6 +233,13 @@ def _index(db, stream, allow_reverse):
                     )
                 count_in_section += 1
                 occupied = len(value) - value.count("-") - value.count(".")
+                upper = value.encode("ascii", errors="replace").upper()
+                symbols.update(upper)
+                if not value.isascii():
+                    symbols.add(255)
+                amino = len(upper) - len(upper.translate(None, _PROTEIN))
+                acg = len(upper) - len(upper.translate(None, b"ACG"))
+                thymine, uracil = upper.count(b"T"), upper.count(b"U")
             elif first_row is None or len(value) != section_width:
                 # The associated block might follow this annotation, or the source
                 # might supply this entire feature on one line. Decide at record end.
@@ -229,14 +249,16 @@ def _index(db, stream, allow_reverse):
                 )
             updated = db.execute(
                 """
-                INSERT INTO track VALUES (?, ?, ?, ?, ?, ?, 1)
+                INSERT INTO track VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                 ON CONFLICT(row_id, tag) DO UPDATE SET
                     columns = track.columns + excluded.columns,
                     occupied = track.occupied + excluded.occupied,
+                    amino = track.amino + excluded.amino, acg = track.acg + excluded.acg,
+                    thymine = track.thymine + excluded.thymine, uracil = track.uracil + excluded.uracil,
                     section = excluded.section, fragments = fragments + 1
                 WHERE track.section != excluded.section
             """,
-                (row, tag, line, section, len(value), occupied),
+                (row, tag, line, section, len(value), occupied, amino, acg, thymine, uracil),
             )
             if not updated.rowcount:
                 raise ValueError(f"duplicate {kind} {row!r} {tag!r} in one Stockholm block")
@@ -256,11 +278,14 @@ def _index(db, stream, allow_reverse):
     if max_blocks > 1 and min_blocks != sequence_sections:
         raise ValueError("incomplete interleaved Stockholm block or duplicate row IDs")
     _check_feature_blocks(db)
-    for row, line, occupied in db.execute(
-        "SELECT row_id, first_line, occupied FROM track WHERE tag=''"
+    for row, line, occupied, *coverage in db.execute(
+        "SELECT row_id, first_line, occupied, amino, acg, thymine, uracil FROM track WHERE tag=''"
     ):
         base, start, end = _domain(row, occupied, allow_reverse)
-        db.execute("INSERT INTO rows VALUES (?, ?, ?, NULL, ?, ?)", (line, row, base, start, end))
+        db.execute(
+            "INSERT INTO rows VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)",
+            (line, row, base, start, end, *coverage),
+        )
     orphan = db.execute("""
         SELECT row_id FROM gs WHERE NOT EXISTS (
             SELECT 1 FROM rows r WHERE r.row_id = gs.row_id OR r.base = gs.row_id
@@ -297,7 +322,13 @@ def _index(db, stream, allow_reverse):
     db.executescript(
         "DROP TABLE track; DROP TABLE gs; DROP TABLE sequence_block; DROP TABLE pending_feature;"
     )
-    return count, width, gf
+    return (
+        count,
+        width,
+        gf,
+        tuple(("TP", t) for t in sorted(types)),
+        frozenset(chr(s) if s < 128 else "<non-ASCII>" for s in symbols),
+    )
 
 
 def _signature(path):
@@ -322,7 +353,7 @@ def _destination(path, compressed):
 class StockholmInventory:
     """An inventory valid for the lifetime of the open_stockholm context."""
 
-    def __init__(self, db, path, offset, signature, count, width, gf):
+    def __init__(self, db, path, offset, signature, count, width, gf, annotations, symbols):
         self._db = db
         self._path = path
         self._offset = offset
@@ -331,41 +362,85 @@ class StockholmInventory:
         self.n_columns = width
         self.family_id = gf.get("ID")
         self.accession = gf.get("AC")
+        self.annotations = annotations
+        self.symbols = symbols
+        self.has_reverse, self.max_nucleotide_coverage = db.execute(
+            "SELECT coalesce(max(start>end),0),max(acg+thymine+uracil) FROM rows"
+        ).fetchone()
+
+    def _row(self, fields):
+        row_id, ac, start, end, base = fields
+        annotations = tuple(
+            self._db.execute(
+                "SELECT tag,value FROM gs_values WHERE row_id IN (?,?) ORDER BY rowid",
+                (row_id, base),
+            )
+        )
+        return StockholmRow(row_id, ac, start, end, annotations)
+
+    def canonical_coverage(self, row_id, molecule, *, transcribe_t=False):
+        """Count known canonical residues in an exact row, including wrapped fragments."""
+        fields = self._db.execute(
+            "SELECT amino,acg,thymine,uracil FROM rows WHERE row_id=?", (row_id,)
+        ).fetchone()
+        if fields is None:
+            raise ValueError(f"unknown Stockholm row {row_id!r}")
+        amino, acg, thymine, uracil = fields
+        if molecule == "protein":
+            return amino
+        if molecule == "rna":
+            return acg + uracil + (thymine if transcribe_t else 0)
+        if molecule == "dna":
+            return acg + thymine
+        raise ValueError(f"unknown molecule {molecule!r}")
+
+    def identity_metadata(self):
+        """Stream identifiers and explicitly typed annotations for molecule detection."""
+        for base, ac in self._db.execute("SELECT base,accession FROM rows"):
+            yield "identifier", base
+            if ac:
+                yield "identifier", ac
+        yield from self._db.execute(
+            "SELECT tag,value FROM gs_values WHERE upper(tag) IN ('DR','MOLECULE','TP')"
+        )
 
     def rows(self) -> Iterator[StockholmRow]:
         """Iterate over row metadata in source order, without loading aligned sequences."""
         for fields in self._db.execute(
-            "SELECT row_id, accession, start, end FROM rows ORDER BY ordinal"
+            "SELECT row_id, accession, start, end, base FROM rows ORDER BY ordinal"
         ):
-            yield StockholmRow(*fields)
+            yield self._row(fields)
 
     def row(self, row_id: str) -> StockholmRow | None:
         """Return one exact, case-sensitive row ID, or None."""
         fields = self._db.execute(
-            "SELECT row_id, accession, start, end FROM rows WHERE row_id = ?", (row_id,)
+            "SELECT row_id, accession, start, end, base FROM rows WHERE row_id = ?", (row_id,)
         ).fetchone()
-        return StockholmRow(*fields) if fields else None
+        return self._row(fields) if fields else None
 
     def find(self, identifier: str) -> Iterator[StockholmRow]:
         """Yield every exact or accession/name alias match, retaining separate domain copies."""
         for fields in self._db.execute(
             """
-            SELECT r.row_id, r.accession, r.start, r.end FROM alias a
+            SELECT r.row_id, r.accession, r.start, r.end, r.base FROM alias a
             JOIN rows r ON r.row_id = a.row_id WHERE a.name = ? ORDER BY r.ordinal
         """,
             (identifier,),
         ):
-            yield StockholmRow(*fields)
+            yield self._row(fields)
 
     def _check_source(self):
         if _signature(self._path) != self._signature:
             raise ValueError(f"Stockholm input changed while in use: {self._path}")
 
-    def extract(self, row_ids, output, *, reference_row_id=None, validate_fragment=None):
+    def extract(
+        self, row_ids, output, *, reference_row_id=None, validate_fragment=None, transcribe_t=False
+    ):
         """Write ordered rows and optionally return one gapped reference.
 
-        The optional validate_fragment(row_id, text) receives each selected raw
-        sequence fragment in input order, including the requested reference row.
+        The optional validate_fragment(row_id, text) receives the scoring fragment in
+        input order. With transcribe_t, only exported sequence tracks map T/t to U/u.
+        The returned reference always has its original sequence characters.
         Raising an exception preserves any existing output file.
         """
         ordered = tuple(row_ids)
@@ -421,11 +496,13 @@ class StockholmInventory:
                                 kind in ("sequence", "#=GR") and row in selected
                             ):
                                 if kind == "sequence" and validate_fragment is not None:
-                                    validate_fragment(row, value)
+                                    validate_fragment(
+                                        row, value.translate(_TRANSCRIBE) if transcribe_t else value
+                                    )
                                 self._db.execute(
                                     "INSERT INTO piece VALUES (?, ?, ?, ?)", (row, tag, line, value)
                                 )
-                    reference = self._write_tracks(out, ordered, reference_row_id)
+                    reference = self._write_tracks(out, ordered, reference_row_id, transcribe_t)
                     out.write("//\n")
                 self._check_source()
                 os.replace(temp, output)
@@ -433,7 +510,7 @@ class StockholmInventory:
         finally:
             self._db.execute("DROP TABLE piece")
 
-    def _write_tracks(self, out, ordered, reference_row_id):
+    def _write_tracks(self, out, ordered, reference_row_id, transcribe_t):
         reference = []
         for row in chain(ordered, ("",)):
             previous = None
@@ -450,7 +527,9 @@ class StockholmInventory:
                         label = f"#=GR {row} {tag}"
                     out.write(label + " ")
                     previous = tag
-                out.write(value)
+                out.write(
+                    value.translate(_TRANSCRIBE) if transcribe_t and row and not tag else value
+                )
                 if row == reference_row_id and not tag:
                     reference.append(value)
             if previous is not None:
@@ -479,7 +558,7 @@ def open_stockholm(path, *, family=None, temp_dir=None, molecule=None):
         db.execute("PRAGMA cache_size = -2048")
         with _source(path) as stream:
             offset = _header(stream) if family is None else _family_offset(stream, family)
-            count, width, gf = _index(db, stream, molecule != "protein")
+            index = _index(db, stream, molecule != "protein")
             if family is None:
                 for raw in stream:
                     if raw.strip() == _HEADER:
@@ -488,6 +567,6 @@ def open_stockholm(path, *, family=None, temp_dir=None, molecule=None):
                         )
                     if raw.strip():
                         raise ValueError("unexpected content after // terminator")
-        inventory = StockholmInventory(db, path, offset, signature, count, width, gf)
+        inventory = StockholmInventory(db, path, offset, signature, *index)
         inventory._check_source()
         yield inventory

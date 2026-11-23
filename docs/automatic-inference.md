@@ -1,0 +1,28 @@
+# Automatic family inference
+
+For each component, `workflow_summary.json` records the scoring molecule, evidence used to choose it, observed symbols, original family accession, any transcription of T to U and any metadata warnings. `metadata/evidence_summary.json` records how the role was identified. Coordinate references are selected after rows have been matched.
+
+## Scoring molecule
+
+A configured molecule takes precedence. The workflow records contradictions with the source and withholds a conflicting family accession from automatic role matching. Without an override, incompatible trusted annotations or unsupported symbols leave the molecule undetermined. This check uses the whole indexed family.
+
+- A versioned or unversioned Pfam `#=GF AC PFnnnnn` identifies a protein profile. An Rfam `RFnnnnn` identifies an RNA profile. Folder names and free-text family descriptions do not imply a molecule or a role.
+- The workflow recognizes an explicit `protein`, `dna` or `rna` in GF TP or row GS TP/MOLECULE. Typed UniProt pipe headers, recognized RefSeq protein and transcript accessions, RNAcentral identifiers, and selected typed database references can also establish a molecule class. A genomic RefSeq accession or descending interval provides nucleotide context. A transcribed feature can occupy a genomic interval.
+- Without these annotations, canonical amino acids outside the nucleotide IUPAC alphabet indicate protein. A nucleotide scoring heuristic requires A, C and G, exactly one of T or U, and a row with at least 20 canonical nucleotide residues. The heuristic tolerates N, gaps and missing data. Recognized genomic context also allows shorter sequences and supported IUPAC ambiguity codes. The audit identifies this inference separately. Even a sufficiently long ACGT alignment can represent an unusual peptide or a genomic encoding of RNA. The observed letters alone cannot establish those biological distinctions.
+- A/C/G-only, all-gap and unannotated short ACGT families remain undetermined. A configured molecule can supply the missing information.
+
+When evidence identifies RNA and T occurs in its source sequence, automatic RNA preparation transcribes T/t to U/u in selected scoring sequences. It preserves aligned columns, names, case, gap positions and annotation tracks. The original input and its recorded hash retain every distinction between input T and U. `prepared/reference_coordinates.tsv` retains the original symbols for the coordinate reference. A molecule override alone does not authorize transcription. Explicit `triplet evidence` retains its usual scoring-alphabet validation.
+
+## Role evidence
+
+Explicit orthogroups and configured biological role anchors take precedence. Without them the workflow examines resolved alignment rows for each role in the same collection of placement facts used for matching. It counts a membership once per genome. Rows with ambiguous identity, multiple placements, incompatible replicons or unresolved copies of a molecule across placements cannot furnish a consensus witness.
+
+An automatic orthogroup must occur in at least two distinct genome IDs. All informative placements for that family in the same database namespace must agree on the group. OrthoDB taxonomic levels are separate namespaces. A group seen on a clean placement in another role cannot establish the distinction. The audit reports supporting genome counts, competing namespaces and shared memberships. Two recorded genomes need not be different species. With an explicit `orthology_scope`, only qualifying OrthoDB groups at the requested level support selection.
+
+When independent orthology is missing or represented by only a single genome, a distinct Pfam or Rfam family accession can support membership in that profile. This tier still requires a documented placement and a distinguishable molecule for each role. Conflicting role assignments, duplicate candidates, repeated domains, contradictory genome placements and a molecule reused across roles prevent selection. An explicit orthogroup, reference anchor or requested orthology scope keeps its stricter requirements.
+
+The per-row `role_status` in `metadata/evidence.tsv` is `supported` for an orthogroup match or `profile_member` for the weaker profile assignment. The `role_evidence` column in automatic group, selection and match tables identifies resolved groups as `orthogroup_supported` when all three roles have orthogroup evidence, or `profile_membership_included` when at least one uses family membership. A family profile describes sequence or structural homology. The resulting groups are candidates for comparing matched alignments. Genomic co-occurrence and the scores produced from it do not establish physical binding.
+
+## Coordinate reference
+
+An explicit reference retains its usual meaning. Otherwise, each component chooses a representative from the rows in complete, uniquely placed triplets. More canonical residues rank first. Ties prefer an explicit Stockholm domain interval, followed by lexical order of the exact source row ID. All-gap or all-ambiguous rows are ineligible. The number of eligible rows, canonical coverage, exact ID and numbering basis are recorded in `workflow_summary.json`. An interval supplies its original 1-based oriented coordinates. A row without an interval uses row-relative numbering from 1. The coordinate representative contributes no evidence to orthogroup learning or paralog selection.

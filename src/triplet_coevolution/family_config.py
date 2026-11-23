@@ -24,10 +24,12 @@ PROJECT_FIELDS = {
     "schema_version",
     "manifest",
     "cache",
+    "nucleotide_cache",
     "uniprot",
     "expected_orthogroups",
     "analysis",
     "orthology_scope",
+    "analysis_limits",
 }
 
 
@@ -44,7 +46,7 @@ def _strings(value, field):
     return list(dict.fromkeys(value))
 
 
-def _folder_components(directory, cfg, inputs):
+def _folder_components(directory, cfg, inputs, automatic):
     if not directory.is_dir():
         raise ValueError(f"input directory not found: {directory}")
     folders = sorted(
@@ -78,7 +80,10 @@ def _folder_components(directory, cfg, inputs):
                 for p in folder.iterdir()
                 if p.is_file() and p.name.lower().removesuffix(".gz").endswith(STOCKHOLM_SUFFIXES)
             )
-            if len(candidates) != 1:
+            if automatic and len(candidates) > 1:
+                for i, option in enumerate(candidates):
+                    inputs[f"{name}.candidate.{i}"] = option
+            elif len(candidates) != 1:
                 raise ValueError(
                     f"{folder}: found {len(candidates)} Stockholm files; "
                     "set alignment in component.json"
@@ -90,7 +95,7 @@ def _folder_components(directory, cfg, inputs):
     return components, order
 
 
-def family_config(config, directory, *, uniprot=None, default_molecule=None):
+def family_config(config, directory, *, uniprot=None, default_molecule=None, automatic=False):
     if config is not None and directory is not None:
         raise ValueError("choose either --input or --config")
     inputs = {}
@@ -102,8 +107,12 @@ def family_config(config, directory, *, uniprot=None, default_molecule=None):
             inputs["project"] = project
             cfg = _json(project)
         _keys(cfg, (), PROJECT_FIELDS, "project")
-        components, order = _folder_components(base, cfg, inputs)
-        for key, filename in (("manifest", "mappings.tsv"), ("cache", "uniprot.sqlite")):
+        components, order = _folder_components(base, cfg, inputs, automatic)
+        for key, filename in (
+            ("manifest", "mappings.tsv"),
+            ("cache", "uniprot.sqlite"),
+            ("nucleotide_cache", "nucleotide.sqlite"),
+        ):
             if (base / filename).is_file():
                 cfg.setdefault(key, filename)
     else:
@@ -117,10 +126,10 @@ def family_config(config, directory, *, uniprot=None, default_molecule=None):
         order = None
     if type(cfg.setdefault("schema_version", 1)) is not int or cfg["schema_version"] != 1:
         raise ValueError("expected schema_version 1")
-    for key in ("manifest", "cache"):
+    for key in ("manifest", "cache", "nucleotide_cache"):
         if key in cfg:
             inputs[key] = cfg[key] = _typed(cfg[key], Path, key, base)
-    configured_online = _typed(cfg.get("uniprot", False), bool, "uniprot", base)
+    configured_online = _typed(cfg.get("uniprot", automatic), bool, "uniprot", base)
     cfg["uniprot"] = configured_online if uniprot is None else uniprot
     if default_molecule is not None and default_molecule not in ("protein", "dna", "rna"):
         raise ValueError("--default-molecule must be protein, dna or rna")
@@ -172,7 +181,11 @@ def family_config(config, directory, *, uniprot=None, default_molecule=None):
         cfg["components"][name] = comp
     if len({comp["name"] for comp in cfg["components"].values()}) != 3:
         raise ValueError("component names must be unique")
-    if cfg["uniprot"] and not any(c["molecule"] == "protein" for c in cfg["components"].values()):
+    if (
+        not automatic
+        and cfg["uniprot"]
+        and not any(c["molecule"] == "protein" for c in cfg["components"].values())
+    ):
         raise ValueError(
             "UniProt requires protein components; set molecule in component.json "
             "or use --default-molecule protein for an all-protein project"
@@ -184,6 +197,10 @@ def family_config(config, directory, *, uniprot=None, default_molecule=None):
     for key in expected:
         expected[key] = _strings(expected[key], f"expected_orthogroups.{key}")
     analysis = cfg.setdefault("analysis", {})
+    limits = cfg.setdefault("analysis_limits", {})
+    _keys(limits, (), ("pair_cells", "weight_cells"), "analysis_limits")
+    if any(type(v) is not int or v < 1 for v in limits.values()):
+        raise ValueError("analysis_limits entries must be positive integers")
     _keys(analysis, (), ANALYSIS_TYPES, "analysis")
     for key, value in analysis.items():
         analysis[key] = _typed(value, ANALYSIS_TYPES[key], f"analysis.{key}", base)

@@ -1,0 +1,338 @@
+"""Unattended CLI coverage using temporary synthetic families and simulated public metadata."""
+
+import csv
+import gzip
+import json
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+from typer.testing import CliRunner
+
+from triplet_coevolution.cli import app
+from triplet_coevolution.evidence import nucleotide, uniprot
+from triplet_coevolution.io.alignments import read_msa
+
+
+def _no_request(*_args, **_kwargs):
+    pytest.fail("unexpected public request in isolated fixture")
+
+
+@pytest.fixture(autouse=True)
+def block_network(monkeypatch):
+    monkeypatch.setattr(uniprot, "_request", _no_request)
+    monkeypatch.setattr(nucleotide, "_request_json", _no_request)
+
+
+def _folders(base, n=4, local=True):
+    for index, folder in enumerate(("ATPase", "Partner", "guide-RNA")):
+        path = base / folder
+        path.mkdir(parents=True)
+        profile = ("PF98001", "PF98002", "RF98003")[index]
+        lines = ["# STOCKHOLM 1.0", f"#=GF AC {profile}.2"]
+        for i in range(1, n + 1):
+            token = (f"P19{i:03}", f"Q19{i:03}", f"AB{i:06}.1")[index] + "/11-14"
+            if local:
+                lines += [
+                    f"#=GS {token} ASSEMBLY GCA_{i:09}.1",
+                    f"#=GS {token} LOCUS loc{index}_{i}",
+                ]
+            sequence = (("CKDY", "GWFA"), ("FKMD", "YDEH"), ("TCGA", "CGTT"))[index][i % 2]
+            lines.append(f"{token} {sequence}")
+        (path / "family.sto").write_text("\n".join([*lines, "//", ""]), encoding="utf-8")
+
+
+def _run(base, out, *options):
+    return CliRunner().invoke(app, ["run", "--input", str(base), "--out", str(out), *options])
+
+
+def _json(file):
+    return json.loads(file.read_text(encoding="utf-8"))
+
+
+class _Links(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.paths = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.paths.append(dict(attrs)["href"])
+
+
+def test_bare_folders_score_benchmark_and_repeat(tmp_path, monkeypatch):
+    _folders(tmp_path / "input")
+    monkeypatch.chdir(tmp_path)
+    for _ in range(2):
+        run = CliRunner().invoke(app, ["run"])
+        assert run.exit_code == 0, (run.output, run.exception)
+    outputs = list((tmp_path / "results").glob("run-*"))
+    assert len(outputs) == 2
+    out = outputs[0]
+    summary = _json(out / "workflow_summary.json")
+    assert summary["network_enabled"] and summary["status"] == "complete"
+    assert summary["counts"]["resolved_groups"] == 4
+    assert summary["role_evidence_counts"] == {"profile_membership_included": 4}
+    assert (
+        summary["components"]["C"]["molecule"] == "rna"
+        and summary["molecules"]["C"]["transcribe_t"]
+    )
+    assert summary["components"]["C"]["reference_start"] == 11
+    with (out / summary["reference_coordinates"]).open(newline="") as source:
+        symbols = "".join(
+            row["symbol"]
+            for row in csv.DictReader(source, delimiter="\t")
+            if row["component"] == "C"
+        )
+    assert symbols == "CGTT"
+    assert read_msa(out / "prepared/C.sto", "C", "rna").sequences[0] == "CGUU"
+    scores = _json(out / summary["analysis_summary"])
+    assert scores["advanced"]["settings"]["permutations"] == 19
+    for key in (
+        "permutation_mi",
+        "permutation_dca",
+        "permutation_threebody",
+        "threebody_abc",
+        "dca_bc",
+    ):
+        table = scores["advanced"]["outputs"][key]
+        assert table["rows"] > 0 and (out / "analysis" / table["path"]).is_file()
+    report = (out / summary["report"]).read_text(encoding="utf-8")
+    assert summary["score_report"] in report and summary["group_audit"] in report
+    links = _Links()
+    links.feed(report)
+    assert all((out / target).is_file() for target in links.paths)
+    assert all(
+        (out / "analysis" / x["path"]).is_file() for x in scores["outputs"]["tables"].values()
+    )
+    assert all(".triplet-in-progress" not in d["path"] for d in scores["inputs"].values())
+
+
+def test_identifier_only_mock_providers_then_cache_replay(tmp_path, monkeypatch):
+    base, out = tmp_path / "inputs", tmp_path / "first"
+    _folders(base, n=3, local=False)
+    seen = []
+
+    def proteins(url):
+        parts = urlsplit(url)
+        request = parse_qs(parts.query)["query"][0]
+        seen.append(parts.path)
+        entries = []
+        for i in range(1, 4):
+            proteome = f"UP{i:09}"
+            if parts.path == "/proteomes/search" and proteome in request:
+                entries.append({"id": proteome, "genomeAssembly": {"assemblyId": f"GCA_{i:09}.1"}})
+            for ac in (f"P19{i:03}", f"Q19{i:03}"):
+                if parts.path == "/uniprotkb/search" and f"accession:{ac}" in request:
+                    entries.append(
+                        {
+                            "primaryAccession": ac,
+                            "uniProtkbId": ac + "_MOCK",
+                            "organism": {"taxonId": i},
+                            "uniProtKBCrossReferences": [{"database": "Proteomes", "id": proteome}],
+                        }
+                    )
+        return {"results": entries}, {
+            "x-uniprot-release": "fixture",
+            "x-uniprot-release-date": "test",
+        }
+
+    def nucleotides(url):
+        assert "ebi.ac.uk" in url and "family.sto" not in url
+        seen.append("ENA")
+        return [
+            {
+                "accession": f"AB{i:06}",
+                "sequence_version": 1,
+                "assembly_accession": f"GCA_{i:09}.1",
+                "tax_id": i,
+                "base_count": 50,
+            }
+            for i in range(1, 4)
+        ]
+
+    monkeypatch.setattr(uniprot, "_request", proteins)
+    monkeypatch.setattr(nucleotide, "_request_json", nucleotides)
+    first = _run(base, out)
+    assert first.exit_code == 0, (first.output, first.exception)
+    assert {"/uniprotkb/search", "/proteomes/search", "ENA"} <= set(seen)
+    monkeypatch.setattr(uniprot, "_request", _no_request)
+    monkeypatch.setattr(nucleotide, "_request_json", _no_request)
+    cached = tmp_path / "cached"
+    second = _run(base, cached, "--offline")
+    assert second.exit_code == 0, (second.output, second.exception)
+    assert (cached / "prepared/matches.tsv").read_bytes() == (
+        out / "prepared/matches.tsv"
+    ).read_bytes()
+    summary = _json(cached / "metadata/evidence_summary.json")
+    assert summary["providers"]["nucleotide"]["counts"]["cache_hits"] >= 3
+    assert summary["resolver"]["cache_hits"] >= 6
+
+
+def test_explained_zero_and_partial_results(tmp_path, monkeypatch):
+    base = tmp_path / "input"
+    _folders(base, n=2, local=False)
+    out = tmp_path / "unplaced"
+    assert _run(base, out, "--offline").exit_code == 3
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "no_matches" and (out / summary["evidence"]).is_file()
+    assert "No matches" in (out / "report.html").read_text(encoding="utf-8")
+    assert not (out / "analysis").exists()
+
+    def outage(url):
+        raise uniprot.UniProtError("simulated service outage")
+
+    monkeypatch.setattr(uniprot, "_request", outage)
+    monkeypatch.setattr(nucleotide, "_request_json", lambda url: [])
+    failed = tmp_path / "outage"
+    assert _run(base, failed).exit_code == 4
+    summary = _json(failed / "workflow_summary.json")
+    assert summary["status"] == "provider_failure" and summary["providers"]["failures"]
+    assert (failed / summary["evidence"]).is_file() and not (failed / "analysis").exists()
+
+
+def test_input_choice_and_failure_report(tmp_path):
+    base = tmp_path / "input"
+    _folders(base)
+    full = base / "ATPase/family.full"
+    (base / "ATPase/family.sto").rename(full)
+    (full.parent / "family.full.gz").write_bytes(gzip.compress(full.read_bytes()))
+    seed = full.parent / "family.seed"
+    seed.write_text(full.read_text().replace("CKDY", "CGDY"))
+    out = tmp_path / "accepted"
+    result = _run(base, out, "--offline")
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert _json(out / "workflow_summary.json")["sources"]["A"]["path"] == str(full)
+    seed.write_text(seed.read_text().replace("PF98001", "PF98009"))
+    out = tmp_path / "refused"
+    assert _run(base, out, "--offline").exit_code == 1
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "invalid_input" and "competing Stockholm" in summary["reason"]
+    assert (out / summary["report"]).is_file()
+    before = (out / "workflow_summary.json").read_bytes()
+    assert _run(base, out, "--offline").exit_code == 1
+    assert (out / "workflow_summary.json").read_bytes() == before
+
+
+def test_unavailable_optional_model_keeps_mi_and_benchmark(tmp_path, monkeypatch):
+    from triplet_coevolution.inference import advanced
+
+    def no_fit(*args, **kwargs):
+        raise ValueError("simulated solver budget")
+
+    monkeypatch.setattr(advanced, "direct_couplings", no_fit)
+    base, out = tmp_path / "in", tmp_path / "out"
+    _folders(base, n=3)
+    assert _run(base, out, "--offline").exit_code == 3
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "partial" and summary["analysis_plan"]["skipped"]["dca"]
+    assert (out / "analysis/permutation_mi.tsv").is_file() and (
+        out / "analysis/threebody_abc.tsv"
+    ).is_file()
+    assert "--dca" not in _json(out / summary["analyze_args"])
+
+
+def test_project_limits_and_overrides(tmp_path):
+    base = tmp_path / "in"
+    _folders(base)
+    (base / "project.json").write_text(json.dumps({"analysis_limits": {"pair_cells": 10}}))
+    limited = tmp_path / "limited"
+    assert _run(base, limited, "--offline").exit_code == 3
+    summary = _json(limited / "workflow_summary.json")
+    assert summary["status"] == "resource_limit" and (limited / summary["matches"]).is_file()
+    (base / "project.json").write_text(
+        json.dumps({"analysis": {"dca": False, "threebody": False, "permutations": 2, "seed": 12}})
+    )
+    override = tmp_path / "override"
+    run = _run(base, override, "--offline")
+    assert run.exit_code == 0, (run.output, run.exception)
+    with (override / "analysis/permutation_mi.tsv").open(newline="") as fh:
+        assert {r["null_draws"] for r in csv.DictReader(fh, delimiter="\t")} == {"2"}
+    assert not (override / "analysis/dca_ab.tsv").exists()
+
+
+def test_too_few_matches_still_has_a_report_and_evidence(tmp_path):
+    base, out = tmp_path / "in", tmp_path / "out"
+    _folders(base, n=1)
+    run = _run(base, out, "--offline")
+    assert run.exit_code == 3, (run.output, run.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "insufficient_data"
+    assert not summary["ready_for_analysis"] and (out / summary["evidence"]).is_file()
+    assert (out / "prepared/C.sto").is_file() and (out / summary["report"]).is_file()
+
+
+def test_invalid_selected_symbols_keep_finished_evidence(tmp_path):
+    base, out = tmp_path / "in", tmp_path / "out"
+    _folders(base)
+    comp = base / "guide-RNA"
+    (comp / "component.json").write_text('{"molecule":"rna"}')
+    alignment = comp / "family.sto"
+    alignment.write_text(alignment.read_text().replace("TCGA", "ECGA"))
+    run = _run(base, out, "--offline")
+    assert run.exit_code == 1, (run.output, run.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "invalid_input" and "component C" in summary["reason"]
+    assert (out / summary["evidence"]).is_file() and (out / summary["matches"]).is_file()
+    assert summary["reference_coordinates"] is None and not list((out / "prepared").glob("*.sto"))
+
+
+def test_prespecified_sites_replay_original_reference_coordinates(tmp_path, monkeypatch):
+    base, out = tmp_path / "input", tmp_path / "scored"
+    _folders(base)
+    protein = base / "ATPase/family.sto"
+    protein.write_text(protein.read_text().replace("CKDY", "C-KDY").replace("GWFA", "G-WFA"))
+    sites = base / "sites.tsv"
+    sites.write_text("component\toriginal_column\nA\t1\nA\t2\nA\t5\nB\t2\nC\t3\n")
+    (base / "project.json").write_text(json.dumps({"analysis": {"site_panel": "sites.tsv"}}))
+    result = _run(base, out, "--offline")
+    assert result.exit_code == 0, (result.output, result.exception)
+    analysis = _json(out / "analysis/run_summary.json")
+    assert analysis["components"]["A"]["retained_columns"] == [1, 5]
+    with (out / "analysis/mi_ab.tsv").open(newline="") as source:
+        pairs = list(csv.DictReader(source, delimiter="\t"))
+    assert {(r["x_original_col"], r["x_reference_pos"]) for r in pairs} == {
+        ("1", "11"),
+        ("5", "14"),
+    }
+    monkeypatch.chdir(out / "prepared")
+    args = _json(out / "prepared/analyze_args.json")
+    replay = tmp_path / "native"
+    assert CliRunner().invoke(app, [*args, "--out", str(replay)]).exit_code == 0
+    assert (replay / "mi_ab.tsv").read_bytes() == (out / "analysis/mi_ab.tsv").read_bytes()
+    sites.write_text("component\toriginal_column\nA\t999\nB\t2\nC\t3\n")
+    bad = tmp_path / "bad"
+    assert _run(base, bad, "--offline").exit_code == 1
+    failure = _json(bad / "workflow_summary.json")
+    assert failure["status"] == "analysis_error" and "out-of-range" in failure["reason"]
+
+
+def test_oversize_default_scores_bounded_panel_and_replays(tmp_path, monkeypatch):
+    from triplet_coevolution import automatic_run
+
+    base, out = tmp_path / "input", tmp_path / "bounded"
+    _folders(base, 12)
+    monkeypatch.setattr(automatic_run, "DEFAULT_LIMITS", {"pair_cells": 24, "weight_cells": 800})
+    result = _run(base, out, "--offline")
+    assert result.exit_code == 3, (result.output, result.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "partial", summary["reason"]
+    panel = summary["scoring_panel"]
+    assert panel["n_input"] == 12 and summary["scored_scope"]["selection"] == "bounded_panel"
+    assert summary["scored_scope"]["observations"] == panel["n_selected"]
+    assert 8 <= panel["n_selected"] <= 12 and any(v < 4 for v in panel["selected_widths"].values())
+    assert len(read_msa(out / "prepared/A.sto", "A", "protein").ids) == 12
+    assert (out / summary["full_analyze_args"]).is_file()
+    snapshot = _json(out / "analysis/run_summary.json")
+    assert ".triplet-in-progress" not in snapshot["inputs"]["site_panel"]["path"]
+    assert (out / "analysis/permutation_mi.tsv").is_file() and (
+        out / "analysis/threebody_abc.tsv"
+    ).is_file()
+    replay_args = _json(out / summary["analyze_args"])
+    assert "--site-panel" in replay_args
+    monkeypatch.chdir(out / "prepared")
+    replay = tmp_path / "replay"
+    invoked = CliRunner().invoke(app, [*replay_args, "--out", str(replay)])
+    assert invoked.exit_code == 0, invoked.output
+    for name in ("mi_ab.tsv", "dca_bc.tsv", "permutation_threebody.tsv"):
+        assert (out / "analysis" / name).read_bytes() == (replay / name).read_bytes()

@@ -24,6 +24,7 @@ ANALYSIS_TYPES = {
     "pseudocount": float,
     "max_triplets": int,
     "triplet_candidates": Path,
+    "site_panel": Path,
     "permutations": int,
     "seed": int,
     "strata_column": str,

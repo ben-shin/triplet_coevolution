@@ -183,7 +183,7 @@ def _analysis_inputs(prepared, cfg, coordinate_rows):
     return {**kwargs, **cfg.get("analysis", {})}
 
 
-def _write_analysis_args(prepared, kwargs):
+def _write_analysis_args(prepared, kwargs, filename="analyze_args.json"):
     """Record native CLI arguments for replay from the prepared directory."""
     args = ["analyze"]
     for key, value in kwargs.items():
@@ -192,9 +192,11 @@ def _write_analysis_args(prepared, kwargs):
             if value:
                 args.append(option)
         else:
-            arg = value.name if key in ("a", "b", "c", "matches") else str(value)
+            arg = str(value)
+            if isinstance(value, Path) and value.absolute().is_relative_to(prepared.absolute()):
+                arg = value.absolute().relative_to(prepared.absolute()).as_posix()
             args.extend([option, arg])
-    _write_json(prepared / "analyze_args.json", args)
+    _write_json(prepared / filename, args)
 
 
 def _analyze(stage, out, kwargs):
@@ -202,13 +204,15 @@ def _analyze(stage, out, kwargs):
 
     with redirect_stdout(StringIO()):
         analyze(**kwargs, out=stage / "analysis")
-    # The outer publication moves these four generated inputs from staging to their final location.
+    # The outer publication moves generated inputs to their final location.
     path = stage / "analysis" / "run_summary.json"
     summary = json.loads(path.read_text(encoding="utf-8"))
-    for key in (*COMPONENTS, "matches"):
-        source = Path(summary["inputs"][key]["path"]).relative_to(stage.absolute())
-        summary["inputs"][key]["path"] = str(out.absolute() / source)
+    for record in summary["inputs"].values():
+        source = Path(record["path"])
+        if source.is_relative_to(stage.absolute()):
+            record["path"] = str(out.absolute() / source.relative_to(stage.absolute()))
     _write_json(path, summary)
+    return summary
 
 
 def _workflow(config, out, mode, plots=None):
@@ -305,18 +309,50 @@ def prepare(config: ConfigOption, out: OutOption = Path("prepared")) -> None:
 
 
 def run(
-    config: ConfigOption,
-    out: OutOption = Path("results"),
+    config: Annotated[
+        Path | None, typer.Option("--config", help="Raw search workflow JSON.")
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="New or empty output directory.")
+    ] = None,
     plots: Annotated[
         bool | None,
         typer.Option(
             "--plots/--no-plots", help="Override the PNG setting in the analysis configuration."
         ),
     ] = None,
+    directory: Annotated[
+        Path | None,
+        typer.Option(
+            "--input", help="Three named family folders under this directory (default: input)."
+        ),
+    ] = None,
+    online: Annotated[
+        bool | None,
+        typer.Option(
+            "--online/--offline",
+            help="Allow identifier lookups (default) or use only local evidence and caches.",
+        ),
+    ] = None,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option("--cache-dir", help="Directory for reusable public metadata snapshots."),
+    ] = None,
 ) -> None:
-    """Search local sequence databases, align hits, match homologs, and score associations."""
+    """Match three families, score their alignments, benchmark and report without prompts."""
     try:
-        _workflow(config, out, "run", plots)
+        if config is not None:
+            if directory is not None or online is not None or cache_dir is not None:
+                raise ValueError(
+                    "--input, --online/--offline and --cache-dir apply to family folders"
+                )
+            _workflow(config, out or Path("results"), "run", plots)
+        else:
+            from triplet_coevolution.automatic_run import run_families
+
+            status = run_families(directory or Path("input"), out, online, cache_dir, plots)
+            if status:
+                raise typer.Exit(status)
     except (ValueError, TypeError, OSError, csv.Error) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

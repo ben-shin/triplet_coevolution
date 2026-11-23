@@ -4,8 +4,9 @@ Search local sequence collections, build alignments, match homologs and measure 
 
 | Start with | Command | Result |
 | --- | --- | --- |
-| Three named folders containing Stockholm families, including gzip-compressed files | `triplet evidence` | Candidate and group evidence, synchronized rows and reference coordinates for scoring |
-| Three local search databases, seeds or profiles, references and pairing evidence | `triplet run` | Search hits, retrieved sequences, alignments, a pairing audit and the complete analysis |
+| Three named folders containing Stockholm families, including gzip-compressed files | `triplet run` | Matching audit, synchronized observations, automatic scoring and permutation benchmarks when supported, and an offline report |
+| Three family folders with explicitly specified orthology and preparation settings | `triplet evidence` | Detailed candidate evidence, synchronized rows and a scoring handoff |
+| Three local search databases, seeds or profiles, references and pairing evidence | `triplet run --config …` | Search hits, retrieved sequences, alignments, a pairing audit and the complete analysis |
 | Three unpaired alignments and genome or orthology evidence | `triplet prepare` | Matched observations, QC and inputs for `analyze` |
 | Three aligned components and a curated match table | `triplet analyze` | Ranked scores, benchmarks, a site network and an offline HTML report |
 
@@ -30,12 +31,12 @@ For PNG heatmaps, install `python -m pip install ".[plots]"`. For development, u
 If you already have three Stockholm families, put each file in a separate folder under [input](input/README.md). Name the folders after your proteins or nucleic acids and run the following command from the repository root.
 
 ```shell
-triplet evidence --input input --out results/prepared
+triplet run
 ```
 
-With the three alignments alone, the command inventories the rows. To resolve a triplet, it needs evidence for each candidate's identity and genomic context, plus expected orthogroups or annotated reference anchors that distinguish the three roles. One unambiguous member must fill each role. Once matches, molecule types and coordinate references are available, the pipeline also writes arguments for replay with `triplet analyze`. The [three-folder guide](docs/families.md) covers curated mappings for proteins, DNA or RNA, saved caches, optional live UniProt lookups for proteins and the candidate audit.
+The command uses family and row annotations, cached records and public identifier lookups to find unambiguous matches in a shared genomic context. It determines the scoring molecules and coordinate representatives, then scores and benchmarks supported observations. It prints the path to an offline `report.html` under a fresh `results/run-…` directory, including when evidence is insufficient. No configuration or prompts are required. To keep the run entirely local, use `triplet run --offline`. The [automatic run guide](docs/automatic.md) covers the data needed for a match, public services, inference limits and batch exit codes. For strict preparation with explicitly supplied roles, see the [three-folder evidence guide](docs/families.md).
 
-Run the bundled example from the repository root with the environment active. Each command takes a JSON configuration. Paths inside it are relative to that file.
+For a workflow starting with unaligned sequences, run the bundled database-search example from the repository root. Paths in its configuration are relative to the JSON file.
 
 ```shell
 triplet run --config examples/workflow/run.json --out results/full

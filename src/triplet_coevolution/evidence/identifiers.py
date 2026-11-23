@@ -18,6 +18,7 @@ class EvidenceRow:
     end: int | None = None
     present: bool = True
     selectors: tuple[str, ...] = ()
+    annotations: tuple[tuple[str, str], ...] = ()
 
 
 def accession(token: str) -> bool:

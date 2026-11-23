@@ -1,5 +1,7 @@
 # From three Stockholm families to a matched alignment
 
+For a single command that chooses inputs, matches families and scores them, use `triplet run` from the repository root. See the [automatic run guide](automatic.md). The instructions below describe `triplet evidence` and its explicit preparation settings.
+
 Place one folder per component under `input/`. Folder names appear in the audit. Files can use `.sto`, `.sth`, `.stk`, `.stockholm`, `.seed` or `.full`, with or without `.gz`. Hidden directories are ignored. An explicit `alignment` in a component's configuration disambiguates files or accepts another filename. A multi-family file also needs a `family` selector matching its Stockholm ID or accession.
 
 ```shell

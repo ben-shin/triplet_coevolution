@@ -22,6 +22,21 @@ TRIPLE_FIELDS = [f"{prefix}_{key}" for prefix in "abc" for key in SITE_FIELDS]
 NULL_FIELDS = ["statistic", "score", "permutation_p", "bh_q", "null_draws"]
 
 
+class ModelFitError(ValueError):
+    """One optional estimator could not fit the supplied data."""
+
+    def __init__(self, method, reason):
+        super().__init__(str(reason))
+        self.method = method
+
+
+def _fit(method, estimator, *args, **kwargs):
+    try:
+        return estimator(*args, **kwargs)
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        raise ModelFitError(method, exc) from exc
+
+
 def _site(mapping, index, prefix):
     s = mapping.site(int(index))
     return dict(
@@ -193,7 +208,9 @@ def write_advanced_results(
                 pair: getattr(getattr(mi, pair.lower()), score) for pair in ("AB", "AC", "BC")
             }
         dca_blocks = (
-            direct_couplings(data, row_weights, ridge=ridge, min_valid=min_valid) if dca else {}
+            _fit("dca", direct_couplings, data, row_weights, ridge=ridge, min_valid=min_valid)
+            if dca
+            else {}
         )
         if dca:
             pair_scores["dca"] = {pair: block.frobenius for pair, block in dca_blocks.items()}
@@ -202,12 +219,24 @@ def write_advanced_results(
         if threebody and not fixed:
             diagnostics = {"status": "no eligible triples"}
         elif threebody and threebody_model == "global":
-            triples, diagnostics = global_triples(
-                data, fixed, row_weights, l2=global_l2, min_valid=min_valid
+            triples, diagnostics = _fit(
+                "threebody",
+                global_triples,
+                data,
+                fixed,
+                row_weights,
+                l2=global_l2,
+                min_valid=min_valid,
             )
         elif threebody:
-            triples = fit_triples(
-                data, fixed, row_weights, pseudocount=pseudocount, min_valid=min_valid
+            triples = _fit(
+                "threebody",
+                fit_triples,
+                data,
+                fixed,
+                row_weights,
+                pseudocount=pseudocount,
+                min_valid=min_valid,
             )
         vectors = {
             key: np.concatenate(

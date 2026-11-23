@@ -208,9 +208,16 @@ def attach_evidence_report(directory: Path, workflow: dict) -> None:
     links = (("evidence", "Candidate evidence"), ("group_audit", "Group decisions"),
              ("reference_coordinates", "Reference coordinates"), ("matches", "Matched observations"),
              ("analyze_args", "Replay analysis"))
+    panel_text = ""
+    if (panel := workflow.get("scoring_panel", {})).get("status") == "selected":
+        widths = ", ".join(f"{key} {width}" for key, width in panel["selected_widths"].items())
+        panel_text = (f'<p>This bounded panel scored {summary["matched_observations"]:,} observations. '
+                      f'Selected site counts before quality filtering: {_text(widths)}. '
+                      + _link("../report.html", "Full matching audit and panel selection") + '</p>')
     section = (
         '<section id="workflow"><h2>Stockholm families and matching evidence</h2>' + table
         + f'<p>{workflow["counts"]["resolved_groups"]:,} groups supplied complete matches.</p>'
+        + panel_text
         + '<p class="audit-links">' + "".join(_link("../" + workflow[key], label) for key, label in links)
         + _link("../workflow_summary.json", "Workflow manifest") + '</p></section>'
     )

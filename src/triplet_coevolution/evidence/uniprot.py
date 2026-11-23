@@ -90,8 +90,10 @@ def _request(url):
 
 
 class Resolver:
-    def __init__(self, cache: Path | None, live: bool):
+    def __init__(self, cache: Path | None, live: bool, *, audit_errors=False):
         self.live = live
+        self.audit_errors = audit_errors
+        self.failure = ""
         self.stats = Counter()
         self.releases = set()
         self.cache_name = cache.name if cache else None
@@ -302,7 +304,17 @@ class Resolver:
         self.stats["cache_misses"] += len(missing)
         if self.live:
             for i in range(0, len(missing), 48):
-                result.update(self._fetch(missing[i : i + 48]))
+                chunk = missing[i : i + 48]
+                if not self.failure:
+                    try:
+                        result.update(self._fetch(chunk))
+                    except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
+                        if not self.audit_errors:
+                            raise
+                        self.db.rollback()
+                        self.failure = str(exc)[:500]
+                if self.failure:
+                    result.update({key: {"provider_error": self.failure} for key in chunk})
         return result
 
     def provenance(self):

@@ -38,7 +38,14 @@ def _candidates(inventory, comp, manifest_ids):
             yield EvidenceRow(token, present=False, selectors=(token,))
     for row_id, tokens in selectors.items():
         row = inventory.row(row_id)
-        yield EvidenceRow(row.row_id, row.accession, row.start, row.end, selectors=tuple(tokens))
+        yield EvidenceRow(
+            row.row_id,
+            row.accession,
+            row.start,
+            row.end,
+            selectors=tuple(tokens),
+            annotations=row.annotations,
+        )
 
 
 def _reference(inventory, comp):
@@ -126,7 +133,7 @@ def _sequence_validator(component, molecule):
     return validate
 
 
-def _extract(inventories, references, cfg, prepared, matches):
+def _extract(inventories, references, cfg, prepared, matches, *, automatic=False):
     components = {}
     kwargs = {"matches": prepared / "matches.tsv"}
     missing = []
@@ -157,6 +164,7 @@ def _extract(inventories, references, cfg, prepared, matches):
                     replay,
                     reference_row_id=ref.row_id if ref else None,
                     validate_fragment=_sequence_validator(name, comp["molecule"]),
+                    **({"transcribe_t": True} if comp.get("transcribe_t") else {}),
                 )
                 if separate_reference and ids:
                     _matched_subset(replay, output, ref.row_id, len(ids))
@@ -213,9 +221,14 @@ def _extract(inventories, references, cfg, prepared, matches):
                 if strand == "-":
                     kwargs[f"{key}_strand"] = strand
             else:
-                missing.append(f"{name} ({comp['name']}): set reference_id")
+                if matches or not automatic:
+                    reason = "no usable matched coordinate row" if automatic else "set reference_id"
+                    missing.append(f"{name} ({comp['name']}): {reason}")
             if comp["molecule"] is None:
-                missing.append(f"{name} ({comp['name']}): declare molecule")
+                reason = (
+                    "scoring molecule could not be inferred" if automatic else "declare molecule"
+                )
+                missing.append(f"{name} ({comp['name']}): {reason}")
             else:
                 kwargs[f"{key}_type"] = comp["molecule"]
             components[name] = info
@@ -238,27 +251,38 @@ def _cache(cfg, metadata):
     return target
 
 
-def _prepare(config, directory, out, score, uniprot, molecule):
+def _prepare(
+    config,
+    directory,
+    out,
+    score,
+    uniprot,
+    molecule,
+    *,
+    automatic=False,
+    cache_directory=None,
+    plots=None,
+):
     from triplet_coevolution.cli import _check_output, _file_stamp, _input_identity, _stage_run
     from triplet_coevolution.evidence import EvidenceRow, generate_evidence
     from triplet_coevolution.io.stockholm import open_stockholm
 
     out = out.expanduser().absolute()
     _check_output(out)
-    cfg, paths, order = family_config(config, directory, uniprot=uniprot, default_molecule=molecule)
+    options = {"uniprot": uniprot, "default_molecule": molecule, "automatic": automatic}
+    cfg, paths, order = family_config(config, directory, **options)
     if directory is not None or config is None:
         folder = (directory or Path("input")).resolve()
         if out.resolve().is_relative_to(folder):
             raise ValueError("choose --out outside the three-folder input project")
     stamps = {path: _file_stamp(path) for path in set(paths.values())}
     identities = {path: _input_identity(path) for path in stamps}
-    if (cfg, paths, order) != family_config(
-        config, directory, uniprot=uniprot, default_molecule=molecule
-    ):
+    if (cfg, paths, order) != family_config(config, directory, **options):
         raise ValueError("project settings changed while reading; retry with stable inputs")
-    if "cache" in paths and any(
-        Path(str(paths["cache"]) + suffix).exists()
-        and Path(str(paths["cache"]) + suffix).stat().st_size
+    if any(
+        Path(str(cache) + suffix).exists() and Path(str(cache) + suffix).stat().st_size
+        for key, cache in paths.items()
+        if key in ("cache", "nucleotide_cache")
         for suffix in ("-wal", "-journal")
     ):
         raise ValueError("use a closed, checkpointed SQLite cache snapshot as input")
@@ -275,21 +299,66 @@ def _prepare(config, directory, out, score, uniprot, molecule):
             inventories = {}
             selections = {}
             references = {}
+            decisions = {}
+            source_choices = {}
+            reference_choices = {}
             for name, comp in cfg["components"].items():
+                if automatic:
+                    from triplet_coevolution.automatic_inputs import choose_source
+
+                    candidates = [p for k, p in paths.items() if k.startswith(f"{name}.candidate.")]
+                    if candidates:
+                        selected, source_choices[name] = choose_source(
+                            candidates, comp.get("family")
+                        )
+                        paths[f"{name}.alignment"] = comp["alignment"] = selected
+                    else:
+                        source_choices[name] = {
+                            "path": str(comp["alignment"]),
+                            "reason": "configured or only alignment",
+                        }
                 inv = stack.enter_context(
                     open_stockholm(
                         comp["alignment"], family=comp.get("family"), molecule=comp["molecule"]
                     )
                 )
                 inventories[name] = inv
+                if automatic:
+                    from triplet_coevolution.auto_family import infer_molecule
+
+                    decisions[name] = infer_molecule(inv, comp["molecule"])
+                    comp["molecule"] = decisions[name]["molecule"]
+                    comp["transcribe_t"] = decisions[name]["transcribe_t"]
                 references[name] = _reference(inv, comp)
                 selections[name] = _candidates(inv, comp, manifest_ids.get(name, ()))
+            resolver_options = {}
+            if automatic:
+                from triplet_coevolution.automatic_inputs import lookup_snapshot
+
+                cache = lookup_snapshot(
+                    cfg.get("cache"), cache_directory, metadata, "uniprot.sqlite", cfg["uniprot"]
+                )
+                resolver_options = {
+                    "automatic": True,
+                    "molecule_types": {n: c["molecule"] for n, c in cfg["components"].items()},
+                    "automatic_profiles": {n: d["profile"] for n, d in decisions.items()},
+                    "nucleotide_cache": lookup_snapshot(
+                        cfg.get("nucleotide_cache"),
+                        cache_directory,
+                        metadata,
+                        "nucleotide.sqlite",
+                        cfg["uniprot"],
+                    ),
+                    "nucleotide_online": cfg["uniprot"],
+                }
+            else:
+                cache = _cache(cfg, metadata)
             result = generate_evidence(
                 selections,
                 metadata,
                 manifest=cfg.get("manifest"),
                 uniprot=cfg["uniprot"],
-                cache=_cache(cfg, metadata),
+                cache=cache,
                 expected_orthogroups=cfg["expected_orthogroups"],
                 reference_anchors={
                     n: c["reference_id"]
@@ -303,6 +372,7 @@ def _prepare(config, directory, out, score, uniprot, molecule):
                         ref.start,
                         ref.end,
                         selectors=(cfg["components"][n]["reference_id"],),
+                        annotations=ref.annotations,
                     )
                     for n, ref in references.items()
                     if ref is not None
@@ -312,10 +382,55 @@ def _prepare(config, directory, out, score, uniprot, molecule):
                     n for n, c in cfg["components"].items() if c["molecule"] == "protein"
                 ],
                 component_names={n: c["name"] for n, c in cfg["components"].items()},
+                **resolver_options,
             )
             counts = result["counts"]
             matches = _matches(metadata, prepared, counts)
-            comps, kwargs, missing = _extract(inventories, references, cfg, prepared, matches)
+            if automatic:
+                from triplet_coevolution.auto_family import choose_reference
+
+                for name, inv in inventories.items():
+                    comp = cfg["components"][name]
+                    if references[name]:
+                        reference_choices[name] = {
+                            "source": "configured",
+                            "reference_row_id": references[name].row_id,
+                        }
+                        continue
+                    ids = (getattr(m, f"{name.lower()}_id") for m in matches)
+                    ref, reference_choices[name] = choose_reference(
+                        inv, ids, comp["molecule"], transcribe_t=comp["transcribe_t"]
+                    )
+                    if ref:
+                        references[name] = ref
+                        comp["reference_id"] = ref.row_id
+            extract_error = None
+            try:
+                comps, kwargs, missing = _extract(
+                    inventories, references, cfg, prepared, matches, automatic=automatic
+                )
+            except ValueError as exc:
+                if not automatic:
+                    raise
+                # The freshly created private directory contains our matches and partial extracts.
+                # Keep the evidence and the match table, publish none of the incomplete alignments.
+                for path in prepared.iterdir():
+                    if path.name != "matches.tsv":
+                        path.unlink()
+                extract_error = str(exc)
+                kwargs, missing = {}, [extract_error]
+                comps = {
+                    n: {
+                        "name": cfg["components"][n]["name"],
+                        "molecule": cfg["components"][n]["molecule"],
+                        "reference_row_id": ref.row_id if (ref := references[n]) else None,
+                        "source_columns": inv.n_columns,
+                        "source_rows": inv.n_rows,
+                        "exported_rows": 0,
+                        "alignment": None,
+                    }
+                    for n, inv in inventories.items()
+                }
         summary = {
             "schema_version": 1,
             "software_version": __version__,
@@ -330,14 +445,41 @@ def _prepare(config, directory, out, score, uniprot, molecule):
             "group_audit": "metadata/groups.tsv",
             "resolver_summary": "metadata/evidence_summary.json",
             "matches": "prepared/matches.tsv",
-            "reference_coordinates": "prepared/reference_coordinates.tsv",
+            "reference_coordinates": "prepared/reference_coordinates.tsv"
+            if not extract_error
+            else None,
             "ready_for_analysis": not missing,
             "analysis_requested": score,
             "analysis_blockers": missing,
             "analyze_args": None,
             "analysis_summary": None,
         }
-        if not missing:
+        if automatic:
+            from triplet_coevolution.automatic_run import finish_run
+
+            summary.update(
+                {
+                    "mode": "automatic",
+                    "molecules": decisions,
+                    "sources": source_choices,
+                    "preparation_error": extract_error,
+                    "references": reference_choices,
+                    "network_enabled": cfg["uniprot"],
+                    "providers": result["providers"],
+                    "role_evidence_counts": result.get("role_evidence_counts", {}),
+                    "group_status_counts": result["group_status_counts"],
+                    "cache_directory": str(cache_directory),
+                }
+            )
+            if cfg["uniprot"]:
+                from triplet_coevolution.automatic_inputs import save_snapshots
+
+                try:
+                    save_snapshots(metadata, cache_directory)
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    summary["cache_warning"] = str(exc)
+            finish_run(stage, out, summary, kwargs, cfg["analysis"], cfg["analysis_limits"], plots)
+        elif not missing:
             _write_analysis_args(prepared, kwargs)
             summary["analyze_args"] = "prepared/analyze_args.json"
             if score:
