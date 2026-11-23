@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 from contextlib import closing, nullcontext
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -462,26 +463,23 @@ def _collect(
                 ):
                     status = "conflicting_stockholm_taxa"
                 mapped = {**meta, **mapping}
-                if not curated and meta.get("genome_id"):
-                    for field in (
-                        "genome_id",
-                        "assembly_id",
-                        "proteome_id",
-                        "replicon_id",
-                        "taxon_id",
-                        "neighborhood_id",
-                    ):
-                        if not mapped.get(field) and meta.get(field):
-                            mapped[field] = meta[field]
-                    if not mapping.get("assembly_id") and meta.get("assembly_id"):
-                        mapped["genome_id"] = meta["assembly_id"]
-                    if (
-                        meta.get("assembly_id")
-                        and mapping.get("assembly_id")
-                        and meta["assembly_id"] != mapping["assembly_id"]
-                    ):
-                        status = "conflicting_stockholm_assembly"
-                        facts.append((row_id, meta, status))
+                if not curated and meta:
+                    if not mapped.get("taxon_id"):
+                        mapped["taxon_id"] = meta.get("taxon_id", "")
+                    if mapping.get("source") == "UniProtKB":
+                        mapped.update(
+                            {
+                                k: mapping.get(k, "")
+                                for k in (
+                                    "genome_id",
+                                    "assembly_id",
+                                    "proteome_id",
+                                    "neighborhood_id",
+                                    "replicon_id",
+                                )
+                            }
+                        )
+                        mapped["provider_genome_id"] = mapping.get("genome_id", "")
                 if mapping.get("source") == "UniProtKB" and mapping.get("source_type") != "curated":
                     mapped.update(source_type="uniprot", placement_source="UniProtKB Proteomes")
                 if not curated and not status and meta.get("orthogroups"):
@@ -1129,46 +1127,257 @@ def _audit_rows(db, names):
         )
 
 
-def _assembly_aliases(db, resolver):
-    """Join counterpart assembly names only with version-specific NCBI pairing evidence."""
-    if not db.execute("SELECT 1 FROM mappings WHERE genome LIKE 'GCA_%' LIMIT 1").fetchone():
-        return
-    db.execute(
-        "CREATE TEMP TABLE refseq_targets AS SELECT rowid AS entry,genome FROM mappings WHERE genome LIKE 'GCF_%'"
-    )
-    db.execute("CREATE INDEX refseq_target_key ON refseq_targets(genome)")
-    targets = (
-        g
-        for (g,) in db.execute("SELECT DISTINCT genome FROM refseq_targets ORDER BY genome")
-        if ASSEMBLY.fullmatch(g)
-    )
-    while chunk := tuple(itertools.islice(targets, 30)):
-        for original, relation in resolver.assembly_pairs(chunk).items():
-            canonical = relation.get("canonical")
-            if not canonical:
-                continue
-            for entry, raw in db.execute(
-                "SELECT t.entry,m.raw FROM refseq_targets t JOIN mappings m ON m.rowid=t.entry WHERE t.genome=?",
-                (original,),
-            ):
-                data = json.loads(raw)
-                if data.get("assembly_id") == original:
-                    data["canonical_assembly_id"] = canonical
-                data.update(
-                    genome_id=canonical,
-                    assembly_aliases=[original, canonical],
-                )
-                data["cross_references"] = [
-                    *data.get("cross_references", ()),
-                    {
+def _genome_aliases(db, resolver):
+    """Collect identifiers before mapping verified synonyms to common genome keys."""
+    db.executescript("""
+        CREATE TEMP TABLE genome_claims(id TEXT PRIMARY KEY) WITHOUT ROWID;
+        INSERT OR IGNORE INTO genome_claims SELECT genome FROM mappings WHERE genome!='';
+        INSERT OR IGNORE INTO genome_claims SELECT json_extract(raw,'$.assembly_id') FROM mappings;
+        INSERT OR IGNORE INTO genome_claims
+            SELECT j.value FROM mappings m,json_each(m.raw,'$.stockholm_assemblies') j;
+        INSERT OR IGNORE INTO genome_claims
+            SELECT j.value FROM mappings m,json_each(m.raw,'$.stockholm_unversioned_assemblies') j;
+        CREATE TEMP TABLE genome_aliases(id TEXT PRIMARY KEY,canonical TEXT,witness TEXT) WITHOUT ROWID;
+        CREATE TEMP TABLE proteome_alternatives(id TEXT PRIMARY KEY,genomes TEXT) WITHOUT ROWID;
+    """)
+    if db.execute("SELECT 1 FROM genome_claims WHERE id GLOB 'GCA_*' LIMIT 1").fetchone():
+        targets = (
+            v
+            for (v,) in db.execute("SELECT id FROM genome_claims WHERE id GLOB 'GCF_*' ORDER BY id")
+            if ASSEMBLY.fullmatch(v)
+        )
+        while chunk := tuple(itertools.islice(targets, 30)):
+            for original, relation in resolver.assembly_pairs(chunk).items():
+                if canonical := relation.get("canonical"):
+                    witness = {
                         "source": "NCBI Datasets",
-                        "paired_assembly": relation["paired_record"],
                         "reported_assembly": original,
-                    },
-                ]
+                        "paired_assembly": relation["paired_record"],
+                    }
+                    db.execute(
+                        "INSERT INTO genome_aliases VALUES (?,?,?)",
+                        (original, canonical, json.dumps(witness)),
+                    )
+    db.execute("INSERT OR IGNORE INTO genome_claims SELECT canonical FROM genome_aliases")
+    # A single UniProt/curated placement or an unambiguous row assertion can link a
+    # proteome to an assembly. Conflicting endpoints never establish an equivalence.
+    for proteome, canonical_assemblies, raw_assemblies in db.execute("""
+        WITH pairs AS (
+            SELECT DISTINCT json_extract(raw,'$.proteome_id') AS up,
+                   json_extract(raw,'$.assembly_id') AS assembly
+            FROM mappings WHERE status='' AND json_extract(raw,'$.source_type') IN ('uniprot','curated')
+            UNION SELECT DISTINCT json_extract(raw,'$.stockholm_proteomes[0]'),
+                                  json_extract(raw,'$.stockholm_assemblies[0]')
+            FROM mappings WHERE status='' AND json_extract(raw,'$.source_type')='stockholm'
+            AND json_array_length(raw,'$.stockholm_proteomes')=1 AND json_array_length(raw,'$.stockholm_assemblies')=1)
+        SELECT up,json_group_array(DISTINCT coalesce(a.canonical,p.assembly)),json_group_array(DISTINCT p.assembly)
+        FROM pairs p LEFT JOIN genome_aliases a ON a.id=p.assembly
+        WHERE up GLOB 'UP*' AND (p.assembly GLOB 'GCA_*' OR p.assembly GLOB 'GCF_*')
+        GROUP BY up
+    """):
+        originals = sorted(json.loads(raw_assemblies))
+        if re.fullmatch(r"UP\d{9}", proteome) and all(ASSEMBLY.fullmatch(a) for a in originals):
+            builds = sorted(json.loads(canonical_assemblies))
+            if len(builds) > 1:
                 db.execute(
-                    "UPDATE mappings SET genome=?,raw=? WHERE rowid=?",
-                    (canonical, json.dumps(data, sort_keys=True), entry),
+                    "INSERT INTO proteome_alternatives VALUES (?,?)", (proteome, json.dumps(builds))
+                )
+                continue
+            canonical = builds[0]
+            witness = {
+                "source": "proteome-assembly placement",
+                "proteome_id": proteome,
+                "reported_assemblies": originals,
+                "canonical_assembly": canonical,
+            }
+            witness["assembly_equivalences"] = [
+                json.loads(record[0])
+                for original in originals
+                if (
+                    record := db.execute(
+                        "SELECT witness FROM genome_aliases WHERE id=?", (original,)
+                    ).fetchone()
+                )
+            ]
+            db.execute(
+                "INSERT INTO genome_aliases VALUES (?,?,?)",
+                (proteome, canonical, json.dumps(witness)),
+            )
+
+
+def _placement_options(data, status, resolve, versions, proteome_builds):
+    """Normalize local constraints and a provider's intact fact before identifying conflicts."""
+    explicit = data.get("source_type") == "curated" or data.get("verification_only")
+    local = (
+        []
+        if explicit
+        else data.get("stockholm_assemblies", []) + data.get("stockholm_proteomes", [])
+    )
+    unversioned = [] if explicit else data.get("stockholm_unversioned_assemblies", [])
+    possibilities = {}
+    if unversioned:
+        # A stem supplies a finite set of possible *observed* versions. It
+        # cannot authorize choosing one of them or projecting a provider locus.
+        possibilities = {
+            accession: stem
+            for stem in unversioned
+            for accession in versions(stem)
+            if accession not in local
+        }
+        local += list(possibilities)
+        status = status or "unversioned_stockholm_assembly"
+    primary = data.get("genome_id", "")
+    observed = list(dict.fromkeys([*local, *([primary] if primary else [])]))
+    if not observed:
+        return [(data, status)]
+    destinations = {}
+    witnesses, aliases = [], []
+    explicit_builds = {resolve(v)[0] for v in observed if ASSEMBLY.fullmatch(v)}
+    for identifier in observed:
+        alternatives = proteome_builds(identifier) if identifier.startswith("UP") else ()
+        if alternatives:
+            # A proteome can span reported builds. An explicit compatible
+            # assembly narrows its placement; the proteome alone leaves them open.
+            builds = (
+                sorted(explicit_builds)
+                if explicit_builds and explicit_builds.issubset(alternatives)
+                else alternatives
+            )
+            for genome in builds:
+                destinations.setdefault(genome, []).append(identifier)
+            witnesses.append(
+                {
+                    "source": "proteome-assembly placements",
+                    "proteome_id": identifier,
+                    "possible_assemblies": alternatives,
+                }
+            )
+            continue
+        canonical, witness = resolve(identifier)
+        destinations.setdefault(canonical, []).append(identifier)
+        if witness:
+            witnesses.append(witness)
+            if witness["source"] == "NCBI Datasets":
+                aliases.extend((identifier, canonical))
+    base = dict(data)
+    for build, stem in possibilities.items():
+        witnesses.append(
+            {
+                "source": "versionless Stockholm assembly",
+                "reported_assembly": stem,
+                "possible_observed_assembly": build,
+            }
+        )
+    if witnesses:
+        base["cross_references"] = [*data.get("cross_references", ()), *witnesses]
+    if aliases:
+        base["assembly_aliases"] = list(dict.fromkeys(aliases))
+    if len(destinations) == 1:
+        genome, originals = next(iter(destinations.items()))
+        original_assembly = data.get("assembly_id") or next(
+            (possibilities.get(v, v) for v in originals if ASSEMBLY.fullmatch(v)), ""
+        )
+        base.update(genome_id=genome, assembly_id=original_assembly)
+        if original_assembly and resolve(original_assembly)[0] != original_assembly:
+            base["canonical_assembly_id"] = resolve(original_assembly)[0]
+        for key, value in data.get("stockholm_context", {}).items():
+            if value and not base.get(key) and not explicit:
+                base[key] = value
+        return [(base, status)]
+
+    # Incompatible placement assertions have finite alternatives. Only retain the
+    # provider's genomic interval on its own genome. Stockholm tags stay as source
+    # assertions; their lists do not define pairings of replicons, loci and assemblies.
+    provider = data.get("source_type") in {"uniprot", "nucleotide"} and data.get(
+        "provider_genome_id"
+    )
+    options = []
+    conflict = "conflicting_stockholm_assembly" if provider else "conflicting_stockholm_annotations"
+    for genome, originals in destinations.items():
+        fact = {**base, "genome_id": genome}
+        if provider and resolve(provider)[0] == genome:
+            if assembly := fact.get("assembly_id"):
+                fact["canonical_assembly_id"] = resolve(assembly)[0]
+        else:
+            fact.update(
+                protein_id="",
+                replicon_id="",
+                neighborhood_id="",
+                genomic_start="",
+                genomic_end="",
+                genomic_strand="",
+                source="Stockholm",
+                source_type="stockholm",
+                placement_source="Stockholm GS",
+                assembly_id=next(
+                    (possibilities.get(v, v) for v in originals if ASSEMBLY.fullmatch(v)), ""
+                ),
+                proteome_id=next((v for v in originals if re.fullmatch(r"UP\d{9}", v)), ""),
+            )
+            fact["orthogroups"] = data.get("stockholm_orthogroups", [])
+            if provider and provider in originals:
+                fact.update(
+                    source=data["source"],
+                    source_type=data["source_type"],
+                    placement_source="multiple documented proteome assemblies",
+                )
+        options.append((fact, status or conflict))
+    return options
+
+
+def _reconcile_genomes(db, resolver):
+    _genome_aliases(db, resolver)
+
+    @lru_cache(maxsize=4096)
+    def resolve(identifier):
+        entry = db.execute(
+            "SELECT canonical,witness FROM genome_aliases WHERE id=?", (identifier,)
+        ).fetchone()
+        return (entry[0], json.loads(entry[1])) if entry else (identifier, None)
+
+    @lru_cache(maxsize=512)
+    def versions(stem):
+        return tuple(
+            v
+            for (v,) in db.execute(
+                "SELECT id FROM genome_claims WHERE id GLOB ? ORDER BY id", (stem + ".*",)
+            )
+            if ASSEMBLY.fullmatch(v)
+        )
+
+    @lru_cache(maxsize=4096)
+    def proteome_builds(identifier):
+        row = db.execute(
+            "SELECT genomes FROM proteome_alternatives WHERE id=?", (identifier,)
+        ).fetchone()
+        return json.loads(row[0]) if row else []
+
+    # Freeze the input row IDs. Extra alternatives are emitted once, after all
+    # source lookups, and never become inputs to a second normalization pass.
+    last = db.execute("SELECT max(rowid) FROM mappings").fetchone()[0]
+    for entry, key, lookup, raw, status in db.execute(
+        "SELECT rowid,row_key,lookup,raw,status FROM mappings WHERE rowid<=? ORDER BY rowid",
+        (last,),
+    ):
+        data = json.loads(raw)
+        for i, (fact, decision) in enumerate(
+            _placement_options(data, status, resolve, versions, proteome_builds)
+        ):
+            if i:
+                _append(db, key, lookup, fact, decision)
+            elif fact != data or decision != status:
+                db.execute(
+                    """UPDATE mappings SET protein=?,genome=?,locus=?,groups_json=?,raw=?,status=?
+                             WHERE rowid=?""",
+                    (
+                        fact.get("protein_id", ""),
+                        fact.get("genome_id", ""),
+                        fact.get("neighborhood_id", ""),
+                        json.dumps(fact.get("orthogroups", [])),
+                        json.dumps(fact, sort_keys=True),
+                        decision,
+                        entry,
+                    ),
                 )
 
 
@@ -1256,7 +1465,7 @@ def generate_evidence(
                     **options,
                 )
         if automatic:
-            _assembly_aliases(db, nucleotides)
+            _reconcile_genomes(db, nucleotides)
         _reconcile_intervals(db)
         expected, decisions = _role_expectations(
             db, expected_orthogroups, reference_anchors, orthology_scope

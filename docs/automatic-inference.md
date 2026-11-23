@@ -25,6 +25,18 @@ An assembly annotation can establish where a possible competitor occurs even whe
 
 For a verified equivalent GCF/GCA assembly pair, `assembly_id` retains the source assertion, `genome_id` supplies the common grouping key and `assembly_aliases` lists the verified pair. Distinct nucleotide sequence identifiers can point to the same genomic locus. The group reason `shared_genomic_locus_across_roles` flags two roles on the same confirmed assembly, replicon, ordered span and strand. This comparison uses coordinates with the same convention. RNAcentral locations are compared as reported, and archive-based intervals use 1-based genomic numbering. The audit retains the individual identifiers, original endpoints and strand.
 
+The automatic workflow collects Stockholm genome assertions and provider placements before it compares them. UniProt protein placements and RNAcentral or archive nucleotide placements follow the same assembly rules.
+
+| Placement evidence | Effect on matching |
+| --- | --- |
+| Local and provider report the same versioned assembly | The provider molecule or genomic interval is eligible under the usual identity and role rules. |
+| Local GCA and provider GCF, or local GCF and provider GCA | A verified, sequence-identical versioned pair gives the same match as identical literal IDs. The provider's original ID stays in `assembly_id`, the local ID stays in `stockholm_annotations`, and `cross_references` records the pairing evidence. |
+| Several local tags normalize to one verified assembly | The role has one possible placement. Repeated tags count once. A documented, unambiguous proteome-to-assembly link can also supply the common grouping key. |
+| Two or more local or provider assemblies remain distinct | Each named genome retains the row as a possible competitor. A provider's reported interval stays attached to its original placement. Raw local replicon, neighborhood and locus lists remain visible without assigning unverified combinations to each genome. |
+| A local assembly accession has no version | Observed versions of that accession are possible competing placements. The unversioned assertion remains visible, and the row cannot supply a verified assembly match. |
+
+Confirmed orthogroup exclusions still apply separately to each alternative. A new genome equivalence supplies placement information only. Each selected role must continue to meet its identity and role-evidence requirements.
+
 The per-row `role_status` in `metadata/evidence.tsv` is `supported` for an orthogroup match or `profile_member` for the weaker profile assignment. The `role_evidence` column in automatic group, selection and match tables identifies resolved groups as `orthogroup_supported` when all three roles have orthogroup evidence, or `profile_membership_included` when at least one uses family membership. A family profile describes sequence or structural homology. The resulting groups are candidates for comparing matched alignments. Genomic co-occurrence and the scores produced from it do not establish physical binding.
 
 ## Coordinate reference

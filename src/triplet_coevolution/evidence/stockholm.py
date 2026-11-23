@@ -36,7 +36,11 @@ def annotation_values(row):
             match = re.fullmatch(r"(?:NCBI_TaxID=)?([1-9]\d*);?", value)
             value = match[1] if match else ""
         if tag == "ASSEMBLY" and not ASSEMBLY.fullmatch(value):
-            tag = "INVALID_ASSEMBLY"
+            tag = (
+                "UNVERSIONED_ASSEMBLY"
+                if re.fullmatch(r"GC[AF]_\d{9}", value)
+                else "INVALID_ASSEMBLY"
+            )
         if tag == "PROTEOME" and not re.fullmatch(r"UP\d{9}", value):
             tag = "INVALID_PROTEOME"
         if (
@@ -51,6 +55,7 @@ def annotation_values(row):
                 "REPLICON",
                 "NEIGHBORHOOD",
                 "INVALID_ASSEMBLY",
+                "UNVERSIONED_ASSEMBLY",
                 "INVALID_PROTEOME",
             }
             and value
@@ -120,6 +125,17 @@ def local_placement(row, molecule, family=None):
         "placement_source": "Stockholm GS",
         "orthogroups": sorted(values.get("ORTHOGROUP", ())),
         "stockholm_orthogroups": sorted(values.get("ORTHOGROUP", ())),
+        "stockholm_assemblies": sorted(values.get("ASSEMBLY", ())),
+        "stockholm_proteomes": sorted(values.get("PROTEOME", ())),
+        "stockholm_unversioned_assemblies": sorted(values.get("UNVERSIONED_ASSEMBLY", ())),
+        "stockholm_context": {
+            field: get(tag)
+            for field, tag in (
+                ("replicon_id", "REPLICON"),
+                ("neighborhood_id", "NEIGHBORHOOD"),
+                ("proteome_id", "PROTEOME"),
+            )
+        },
         "cross_references": [{"stockholm": tagged}],
         "genome_id": genome,
         "assembly_id": get("ASSEMBLY"),
@@ -130,7 +146,11 @@ def local_placement(row, molecule, family=None):
     }
     if (
         issue
-        or any(len(v) > 1 for k, v in values.items() if k not in {"ORTHOGROUP", "OS"})
+        or any(
+            len(v) > 1
+            for k, v in values.items()
+            if k not in {"ORTHOGROUP", "OS", "ASSEMBLY", "PROTEOME", "UNVERSIONED_ASSEMBLY"}
+        )
         or any(k.startswith("INVALID_") for k in values)
     ):
         return (
@@ -139,7 +159,7 @@ def local_placement(row, molecule, family=None):
             provenance,
         )
 
-    if not genome:
+    if not (values.get("ASSEMBLY") or values.get("PROTEOME")):
         return nuc, [], provenance
     protein = get("LOCUS")
     if not protein:
@@ -189,18 +209,19 @@ def nucleotide_facts(row, key, payload, local):
     if payload.get("status") != "mapped":
         return [(key, stamp, payload.get("status", "nucleotide_not_found"))]
     facts = {}
-    assertions = annotation_values(row)
     for placement in payload["placements"]:
         ac = placement["nucleotide_accession"]
-        assembly = placement.get("assembly_id") or local.get("assembly_id", "")
+        assembly = placement.get("assembly_id", "")
         common = {
             **stamp,
             **placement,
             "assembly_id": assembly,
-            "genome_id": assembly or local.get("genome_id", ""),
+            "genome_id": assembly,
+            "provider_genome_id": assembly,
         }
-        for field in ("taxon_id", "proteome_id", "replicon_id"):
-            common[field] = placement.get(field) or local.get(field, "")
+        common["taxon_id"] = placement.get("taxon_id") or local.get("taxon_id", "")
+        for field in ("proteome_id", "replicon_id", "neighborhood_id"):
+            common[field] = placement.get(field, "")
         common["cross_references"] = [
             *local["cross_references"],
             {"provider": stamp["source"], "query": key, "placement": placement},
@@ -211,12 +232,6 @@ def nucleotide_facts(row, key, payload, local):
             and local["taxon_id"] != placement["taxon_id"]
         ):
             status = "conflicting_stockholm_taxa"
-        elif (
-            assertions.get("ASSEMBLY")
-            and placement.get("assembly_id")
-            and placement["assembly_id"] not in assertions["ASSEMBLY"]
-        ):
-            status = "conflicting_stockholm_assembly"
         elif "genomic_start" in placement and not placement.get("assembly_id"):
             status = "unverified_coordinate_assembly"
         elif "genomic_start" in placement:
@@ -238,13 +253,7 @@ def nucleotide_facts(row, key, payload, local):
                 genomic_strand="+" if row.end >= row.start else "-",
             )
             status = ""
-        if assertions.get("NEIGHBORHOOD"):
-            common["neighborhood_id"] = next(iter(assertions["NEIGHBORHOOD"]))
         facts[ac, common.get("genome_id"), common.get("protein_id"), status] = (key, common, status)
-    if local.get("genome_id") and not any(
-        f[1].get("genome_id") == local["genome_id"] for f in facts.values()
-    ):
-        facts["stockholm"] = (row.row_id, local, "conflicting_stockholm_assembly")
     # A rejected alternate must not disappear and silently make a competing placement unique.
     if any(f[2] for f in facts.values()) and len(facts) > 1:
         return [(k, m, s or "incomplete_nucleotide_placements") for k, m, s in facts.values()]

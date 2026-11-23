@@ -504,3 +504,196 @@ def test_automatic_bounded_panel_filters_unsupported_candidates(tmp_path, monkey
     assert (out / summary["full_analyze_args"]).is_file() and (
         out / "analysis/permutation_mi.tsv"
     ).is_file()
+
+
+def _audit_rows(path):
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream, delimiter="\t"))
+
+
+@pytest.mark.parametrize(
+    ("component", "folder", "residues"), [("A", "ATPase", "MEMH"), ("C", "guide-RNA", "ACGU")]
+)
+@pytest.mark.parametrize("wrong_role", [False, True])
+def test_folder_run_keeps_finite_assembly_alternatives(
+    tmp_path, component, folder, residues, wrong_role
+):
+    base, out = tmp_path / "input", tmp_path / "results"
+    _folders(base, 4)
+    expected = {name: [f"demo:{name}"] for name in "ABC"}
+    (base / "project.json").write_text(json.dumps({"expected_orthogroups": expected}))
+    for name, subfolder in zip("ABC", ("ATPase", "Partner", "guide-RNA"), strict=True):
+        source = base / subfolder / "family.sto"
+        lines = []
+        for line in source.read_text().splitlines():
+            if " LOCUS " in line:
+                lines.append(f"#=GS {line.split()[1]} ORTHOGROUP demo:{name}")
+            lines.append(line)
+        if subfolder == folder:
+            lines[-1:-1] = [
+                "#=GS anonymous-row ASSEMBLY GCA_000000001.1",
+                "#=GS anonymous-row ASSEMBLY GCA_000000002.1",
+                f"#=GS anonymous-row ORTHOGROUP demo:{'unrelated' if wrong_role else name}",
+                f"anonymous-row {residues}",
+            ]
+        source.write_text("\n".join([*lines, ""]))
+    invoked = _run(base, out, "--offline")
+    assert invoked.exit_code == 0, (invoked.output, invoked.exception)
+    summary = _json(out / "workflow_summary.json")
+    groups = {r["genome_id"]: r for r in _audit_rows(out / summary["group_audit"])}
+    healthy = {"GCA_000000003.1", "GCA_000000004.1"}
+    possible = {"GCA_000000001.1", "GCA_000000002.1"}
+    selected = {r["observation_id"] for r in _audit_rows(out / summary["matches"])}
+    assert selected == (healthy | possible if wrong_role else healthy)
+    assert (
+        summary["scored_scope"]["observations"]
+        == len(selected)
+        == summary["counts"]["resolved_groups"]
+    )
+    displayed = (out / summary["report"]).read_text(encoding="utf-8")
+    assert f"{len(selected)} of 4 groups resolved" in displayed
+    candidates = [
+        r for r in _audit_rows(out / summary["evidence"]) if r["sequence_id"] == "anonymous-row"
+    ]
+    assert {r["genome_id"] for r in candidates} == possible
+    assert not any(r["selected"] == "1" for r in candidates)
+    if wrong_role:
+        assert all(r["role_status"] == "orthogroup_mismatch" for r in candidates)
+    else:
+        assert all(
+            groups[g]["status"] == "ambiguous"
+            and groups[g][component.lower() + "_candidates"] == "2"
+            for g in possible
+        )
+
+
+@pytest.mark.parametrize("protein", [False, True], ids=["rna", "protein"])
+@pytest.mark.parametrize("local_refseq", [False, True], ids=["local_gca", "local_gcf"])
+@pytest.mark.parametrize("identical", [False, True], ids=["distinct", "verified_alias"])
+def test_folder_run_reconciles_reported_and_local_assemblies(
+    tmp_path, monkeypatch, protein, local_refseq, identical
+):
+    base, out = tmp_path / "input", tmp_path / "result"
+    _folders(base, 3)
+    gca, gcf = "GCA_000000001.1", "GCF_000091123.2"
+    local, reported = (gcf, gca) if local_refseq else (gca, gcf)
+    original = ("P19001" if protein else "AB000001.1") + "/11-14"
+    identifier = ("CHECK_YEAST" if protein else "URS000000000A_91") + "/11-14"
+    source = base / ("ATPase" if protein else "guide-RNA") / "family.sto"
+    source.write_text(
+        "\n".join(
+            [
+                *(
+                    line.replace(original, identifier).replace(gca, local)
+                    if original in line
+                    else line
+                    for line in source.read_text().splitlines()
+                    if not (original in line and " LOCUS " in line)
+                ),
+                "",
+            ]
+        )
+    )
+    calls = []
+
+    def nucleotide_response(url):
+        calls.append(url)
+        if "/genome-locations/" in url:
+            assert not protein
+            return {
+                "count": 1,
+                "next": None,
+                "results": [
+                    {
+                        "chromosome": "chrI",
+                        "start": 24,
+                        "end": 28,
+                        "strand": 1,
+                        "assembly": {"gca_accession": reported},
+                    }
+                ],
+            }
+        assert f"/{gcf}/dataset_report" in url
+        return {
+            "reports": [
+                {
+                    "accession": gcf,
+                    "assembly_info": {
+                        "paired_assembly": {
+                            "accession": gca,
+                            "refseq_genbank_are_different": not identical,
+                        }
+                    },
+                }
+            ]
+        }
+
+    def protein_response(url):
+        assert protein
+        calls.append(url)
+        query = parse_qs(urlsplit(url).query)["query"][0]
+        if "/proteomes/" in url:
+            assert "UP123456789" in query
+            rows = [{"id": "UP123456789", "genomeAssembly": {"assemblyId": reported}}]
+        elif "id:CHECK_YEAST" in query:
+            rows = [
+                {
+                    "primaryAccession": "P56789",
+                    "uniProtkbId": "CHECK_YEAST",
+                    "organism": {"taxonId": 91},
+                    "uniProtKBCrossReferences": [{"database": "Proteomes", "id": "UP123456789"}],
+                }
+            ]
+        else:
+            pytest.fail(f"unexpected protein lookup: {query}")
+        return {"results": rows}, {"x-uniprot-release": "fixture", "x-uniprot-release-date": "test"}
+
+    monkeypatch.setattr(nucleotide, "_request_json", nucleotide_response)
+    monkeypatch.setattr(uniprot, "_request", protein_response)
+    result = _run(base, out)
+    assert result.exit_code == 0, (result.output, result.exception)
+    workflow = _json(out / "workflow_summary.json")
+    assert workflow["providers"]["status"] == "complete"
+    assert any("dataset_report" in url for url in calls)
+    selected = {r["observation_id"] for r in _audit_rows(out / workflow["matches"])}
+    assert selected == ({"GCA_000000002.1", "GCA_000000003.1"} | ({gca} if identical else set()))
+    assert (
+        workflow["scored_scope"]["observations"]
+        == len(selected)
+        == workflow["counts"]["resolved_groups"]
+    )
+    records = [r for r in _audit_rows(out / workflow["evidence"]) if r["sequence_id"] == identifier]
+    if identical:
+        (resolved,) = [r for r in records if r["selected"] == "1"]
+        assert (resolved["assembly_id"], resolved["genome_id"]) == (reported, gca)
+        assert ["ASSEMBLY", local] in json.loads(resolved["stockholm_annotations"])
+        assert set(json.loads(resolved["assembly_aliases"])) == {gca, gcf}
+        witness = next(
+            x
+            for x in json.loads(resolved["cross_references"])
+            if x.get("source") == "NCBI Datasets"
+        )
+        assert witness["reported_assembly"] == gcf
+        assert witness["paired_assembly"] == {
+            "accession": gca,
+            "refseq_genbank_are_different": False,
+        }
+        if local_refseq:
+            replay = tmp_path / "cached"
+            monkeypatch.setattr(nucleotide, "_request_json", _no_request)
+            monkeypatch.setattr(uniprot, "_request", _no_request)
+            rerun = _run(base, replay, "--offline")
+            assert rerun.exit_code == 0, (rerun.output, rerun.exception)
+            assert (out / workflow["matches"]).read_bytes() == (
+                replay / workflow["matches"]
+            ).read_bytes()
+            cached = next(
+                r
+                for r in _audit_rows(replay / workflow["evidence"])
+                if r["sequence_id"] == identifier and r["selected"] == "1"
+            )
+            for field in ("assembly_id", "genome_id", "assembly_aliases", "stockholm_annotations"):
+                assert cached[field] == resolved[field]
+    else:
+        assert not any(r["selected"] == "1" for r in records)
+        assert {r["genome_id"] for r in records} == {gca, gcf}
