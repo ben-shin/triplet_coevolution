@@ -7,6 +7,7 @@ import numpy as np
 
 from triplet_coevolution.core.alignment import ComponentMSA, MatchedTripletMSA
 from triplet_coevolution.core.alphabets import CANONICAL
+from triplet_coevolution.msa.support import MissingRowSupport
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ def _pack(flags):
 def _counts(words):
     if hasattr(np, "bitwise_count"):
         counts = np.bitwise_count(words)
-    else:  # NumPy 1.26–1.x
+    else:  # NumPy 1.26â€“1.x
         octets = np.ascontiguousarray(words).view(np.uint8).reshape(*words.shape, 8)
         counts = _BYTE_COUNTS[octets].sum(axis=-1, dtype=np.uint8)
     return counts[0] if counts.shape[0] == 1 else counts.sum(axis=0, dtype=np.int64)
@@ -64,7 +65,7 @@ class _ComponentComparisons:
         q = len(CANONICAL[component.molecule])
         valid = (matrix >= 0) & (matrix < q)
         if not np.all(valid.any(axis=1)):
-            raise ValueError(f"component {component.name} has seqs w no canonical res")
+            raise MissingRowSupport(f"component {component.name} has seqs w no canonical res")
         self.valid = _pack(valid)
         self.bits = [_pack((matrix & (1 << k)) != 0) for k in range((q - 1).bit_length())]
         self.length = component.n_sites

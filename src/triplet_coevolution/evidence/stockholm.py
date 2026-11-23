@@ -105,13 +105,28 @@ def local_placement(row, molecule, family=None):
         nucleotide_identity(row, values, family) if molecule in {"dna", "rna"} else ("", "")
     )
     tagged = {k: sorted(v) for k, v in values.items()}
+
+    def get(key):
+        choices = values.get(key, ())
+        return next(iter(choices)) if len(choices) == 1 else ""
+
+    # Genome placement can survive unresolved molecule identity. Retain each
+    # unambiguous row-scoped placement field even when an accession lookup fails.
+    genome = get("ASSEMBLY") or get("PROTEOME")
     provenance = {
         **metadata,
         "source": "Stockholm",
         "source_type": "stockholm",
         "placement_source": "Stockholm GS",
         "orthogroups": sorted(values.get("ORTHOGROUP", ())),
+        "stockholm_orthogroups": sorted(values.get("ORTHOGROUP", ())),
         "cross_references": [{"stockholm": tagged}],
+        "genome_id": genome,
+        "assembly_id": get("ASSEMBLY"),
+        "proteome_id": get("PROTEOME"),
+        "neighborhood_id": get("NEIGHBORHOOD"),
+        "replicon_id": get("REPLICON"),
+        "nucleotide_accession": nuc,
     }
     if (
         issue
@@ -124,10 +139,6 @@ def local_placement(row, molecule, family=None):
             provenance,
         )
 
-    def get(key):
-        return next(iter(values.get(key, ())), "")
-
-    genome = get("ASSEMBLY") or get("PROTEOME")
     if not genome:
         return nuc, [], provenance
     protein = get("LOCUS")
@@ -137,9 +148,14 @@ def local_placement(row, molecule, family=None):
             if len(acs) > 1:
                 return nuc, [(row.row_id, provenance, "unlinked_accession")], provenance
             base = re.sub(r"/\d+-\d+$", "", row.row_id)
-            if re.fullmatch(r"(?:PF|RF)\d{5}(?:\.\d+)?", base):
-                return nuc, [(row.row_id, provenance, "missing_molecule_id")], provenance
-            protein = next(iter(acs), base)
+            if acs:
+                protein = next(iter(acs))
+            elif re.fullmatch(r"(?:NP|XP|YP|WP)_\d+(?:\.\d+)?", base):
+                protein = base
+            else:
+                # An opaque row label or family name is not a stable molecule ID.
+                # A recognized mnemonic may still resolve to one via UniProt.
+                return nuc, [], provenance
         elif nuc and "." in nuc and row.start is not None:
             protein = f"{nuc}/{row.start}-{row.end}"
         else:
@@ -149,12 +165,6 @@ def local_placement(row, molecule, family=None):
     mapping = {
         **provenance,
         "protein_id": protein,
-        "genome_id": genome,
-        "assembly_id": get("ASSEMBLY"),
-        "proteome_id": get("PROTEOME"),
-        "neighborhood_id": get("NEIGHBORHOOD"),
-        "replicon_id": get("REPLICON"),
-        "nucleotide_accession": nuc,
     }
     if nuc and not nuc.startswith("URS") and row.start is not None:
         mapping.update(
@@ -182,7 +192,15 @@ def nucleotide_facts(row, key, payload, local):
     assertions = annotation_values(row)
     for placement in payload["placements"]:
         ac = placement["nucleotide_accession"]
-        common = {**stamp, **placement, "genome_id": placement.get("assembly_id", "")}
+        assembly = placement.get("assembly_id") or local.get("assembly_id", "")
+        common = {
+            **stamp,
+            **placement,
+            "assembly_id": assembly,
+            "genome_id": assembly or local.get("genome_id", ""),
+        }
+        for field in ("taxon_id", "proteome_id", "replicon_id"):
+            common[field] = placement.get(field) or local.get(field, "")
         common["cross_references"] = [
             *local["cross_references"],
             {"provider": stamp["source"], "query": key, "placement": placement},
@@ -199,6 +217,8 @@ def nucleotide_facts(row, key, payload, local):
             and placement["assembly_id"] not in assertions["ASSEMBLY"]
         ):
             status = "conflicting_stockholm_assembly"
+        elif "genomic_start" in placement and not placement.get("assembly_id"):
+            status = "unverified_coordinate_assembly"
         elif "genomic_start" in placement:
             # RNAcentral gives locations of the entire RNA, possibly spanning introns.
             # A Stockholm /start-end suffix here indexes the RNA, not genomic bases.
@@ -221,6 +241,10 @@ def nucleotide_facts(row, key, payload, local):
         if assertions.get("NEIGHBORHOOD"):
             common["neighborhood_id"] = next(iter(assertions["NEIGHBORHOOD"]))
         facts[ac, common.get("genome_id"), common.get("protein_id"), status] = (key, common, status)
+    if local.get("genome_id") and not any(
+        f[1].get("genome_id") == local["genome_id"] for f in facts.values()
+    ):
+        facts["stockholm"] = (row.row_id, local, "conflicting_stockholm_assembly")
     # A rejected alternate must not disappear and silently make a competing placement unique.
     if any(f[2] for f in facts.values()) and len(facts) > 1:
         return [(k, m, s or "incomplete_nucleotide_placements") for k, m, s in facts.values()]

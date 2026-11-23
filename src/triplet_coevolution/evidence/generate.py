@@ -100,7 +100,8 @@ def _database(db):
         CREATE TABLE assignments (row_key INTEGER, protein TEXT, genome TEXT, locus TEXT,
             groups_json TEXT, replicons_json TEXT, PRIMARY KEY(row_key,protein,genome,locus));
         CREATE TABLE candidates (row_key INTEGER, comp TEXT, protein TEXT, genome TEXT, locus TEXT,
-            group_id TEXT, present INTEGER, reason TEXT, PRIMARY KEY(row_key,protein,genome,locus));
+            group_id TEXT, present INTEGER, reason TEXT, incomplete INTEGER,
+            PRIMARY KEY(row_key,protein,genome,locus));
         CREATE INDEX candidates_group ON candidates(group_id,comp);
         CREATE INDEX candidates_genome ON candidates(genome,locus);
         CREATE TABLE groups (group_id TEXT PRIMARY KEY, genome TEXT, locus TEXT, status TEXT,
@@ -296,7 +297,13 @@ def _save_facts(db, key, row_id, declared, facts, verification):
                 status = "unlinked_accession"
         _append(db, key, lookup, mapping, status)
     for lookup, mapping, status in verification:
-        _append(db, key, lookup, mapping, status or "accession_verification_only")
+        _append(
+            db,
+            key,
+            lookup,
+            {**mapping, "verification_only": True},
+            status or "accession_verification_only",
+        )
 
 
 def _collect(
@@ -455,6 +462,26 @@ def _collect(
                 ):
                     status = "conflicting_stockholm_taxa"
                 mapped = {**meta, **mapping}
+                if not curated and meta.get("genome_id"):
+                    for field in (
+                        "genome_id",
+                        "assembly_id",
+                        "proteome_id",
+                        "replicon_id",
+                        "taxon_id",
+                        "neighborhood_id",
+                    ):
+                        if not mapped.get(field) and meta.get(field):
+                            mapped[field] = meta[field]
+                    if not mapping.get("assembly_id") and meta.get("assembly_id"):
+                        mapped["genome_id"] = meta["assembly_id"]
+                    if (
+                        meta.get("assembly_id")
+                        and mapping.get("assembly_id")
+                        and meta["assembly_id"] != mapping["assembly_id"]
+                    ):
+                        status = "conflicting_stockholm_assembly"
+                        facts.append((row_id, meta, status))
                 if mapping.get("source") == "UniProtKB" and mapping.get("source_type") != "curated":
                     mapped.update(source_type="uniprot", placement_source="UniProtKB Proteomes")
                 if not curated and not status and meta.get("orthogroups"):
@@ -724,12 +751,12 @@ def _classify(db, expected, profile_roles, disagreement):
             reason = "multiple_mappings"
         elif reason != "orthogroup_mismatch" and len(json.loads(raw_replicons)) > 1:
             reason = "multiple_replicon_annotations"
-        elif not protein:
+        elif not protein and reason != "orthogroup_mismatch":
             reason = "missing_molecule_id"
         elif not genome:
             reason = "missing_genome"
         db.execute(
-            "INSERT INTO candidates VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO candidates VALUES (?,?,?,?,?,?,?,?,0)",
             (
                 key,
                 comp,
@@ -749,6 +776,38 @@ def _classify(db, expected, profile_roles, disagreement):
     db.execute("CREATE INDEX conflicts_key ON conflicts(comp,protein)")
     db.execute("""UPDATE candidates SET reason='multiple_mappings' WHERE EXISTS
         (SELECT 1 FROM conflicts WHERE conflicts.comp=candidates.comp AND conflicts.protein=candidates.protein)""")
+
+
+def _retain_incomplete_placements(db, expected):
+    """Keep possible copies with genome evidence out of role learning but in the group audit."""
+    facts = db.execute("""
+        SELECT m.row_key,r.comp,m.protein,m.genome,m.locus,r.present,m.raw,m.status FROM mappings m
+        JOIN rows r ON r.id=m.row_key WHERE r.anchor=0 AND m.status!='' AND m.genome!=''
+          AND coalesce(json_extract(m.raw,'$.verification_only'),0)=0
+        ORDER BY m.row_key,r.comp,m.protein,m.genome,m.locus,r.present,m.status
+    """)
+    for placement, records in itertools.groupby(facts, key=lambda v: v[:6]):
+        key, comp, protein, genome, locus, present = placement
+        possible = set()
+        for *_, raw, status in records:
+            data = json.loads(raw)
+            # A failed biological ID lookup cannot exclude a row based on the
+            # apparent molecule's role. Row-scoped or curated roles can exclude it.
+            groups = (
+                data.get("orthogroups", ())
+                if data.get("source_type") == "curated"
+                else data.get("stockholm_orthogroups", ())
+            )
+            if _role_status(set(groups), expected[comp]) != "orthogroup_mismatch":
+                possible.add(status)
+        reason = min(possible) if possible else "orthogroup_mismatch"
+        db.execute(
+            """INSERT OR IGNORE INTO candidates VALUES (?,?,?,?,?,?,?,?,1)""",
+            (key, comp, protein, genome, locus, _group_id(genome, locus), present, reason),
+        )
+    db.execute("""UPDATE candidates SET reason='multiple_mappings' WHERE reason!='orthogroup_mismatch'
+        AND row_key IN (SELECT row_key FROM candidates WHERE reason!='orthogroup_mismatch'
+                        GROUP BY row_key HAVING max(incomplete) AND count(DISTINCT group_id)>1)""")
 
 
 def _replicon_label(raw):
@@ -804,10 +863,49 @@ def _neighborhood_replicon_reasons(labels):
     return reasons
 
 
+def _shared_genomic_locus(db, gid):
+    """Identify indistinguishable oriented nucleotide loci without collapsing RNA IDs."""
+    seen = {}
+    for comp, raw in db.execute(
+        """
+        SELECT DISTINCT c.comp,m.raw FROM candidates c JOIN mappings m USING(row_key,protein,genome,locus)
+        WHERE c.group_id=? AND c.present AND c.reason IN ('supported','profile_member') AND m.status=''
+          AND json_extract(m.raw,'$.genomic_start') IS NOT NULL
+    """,
+        (gid,),
+    ):
+        data = json.loads(raw)
+        assembly = data.get("canonical_assembly_id") or data.get("assembly_id", "")
+        start, end, strand = (
+            data.get(k) for k in ("genomic_start", "genomic_end", "genomic_strand")
+        )
+        if (
+            not ASSEMBLY.fullmatch(assembly)
+            or not isinstance(start, int)
+            or not isinstance(end, int)
+            or strand not in ("+", "-")
+        ):
+            continue
+        # RNAcentral endpoints retain the provider's coordinate convention. Archive
+        # placements use oriented 1-based genomic intervals from Stockholm rows.
+        rna_coordinates = data.get("source") == "RNAcentral"
+        label = data.get("replicon_id", "")
+        if rna_coordinates and re.fullmatch(r"(?:[0-9]+|[IVX]+|[XYWZ]|MT)", label, re.IGNORECASE):
+            label = "chromosome " + label
+        replicon = _replicon_label(label)
+        if not replicon or not replicon[1]:
+            continue
+        location = assembly, replicon, min(start, end), max(start, end), strand, rna_coordinates
+        if seen.setdefault(location, comp) != comp:
+            return True
+    return False
+
+
 def _summarize_groups(db):
     db.execute("""CREATE TEMP TABLE placements AS
         SELECT c.group_id AS gid,COUNT(DISTINCT NULLIF(m.taxon,'')) AS taxa,
-        COUNT(DISTINCT NULLIF(json_extract(m.raw,'$.assembly_id'),'')) AS assemblies
+        COUNT(DISTINCT NULLIF(coalesce(json_extract(m.raw,'$.canonical_assembly_id'),
+                                      json_extract(m.raw,'$.assembly_id')),'')) AS assemblies
         FROM candidates c JOIN mappings m ON m.row_key=c.row_key AND m.protein=c.protein
         AND m.genome=c.genome AND m.locus=c.locus WHERE c.reason!='orthogroup_mismatch' AND m.status=''
         GROUP BY c.group_id""")
@@ -844,6 +942,8 @@ def _summarize_groups(db):
                 reasons.add(f"{comp}:missing_candidate")
         if all_ready and all(counts.values()) and len(unique) != 3:
             reasons.add("shared_molecule_across_roles")
+        if all_ready and _shared_genomic_locus(db, gid):
+            reasons.add("shared_genomic_locus_across_roles")
         if locus:
             labels = set()
             for comp, raw in db.execute(
@@ -891,6 +991,7 @@ def _summarize_groups(db):
             "conflicting_neighborhood_replicons",
             "unverified_neighborhood_replicons",
             "shared_molecule_across_roles",
+            "shared_genomic_locus_across_roles",
             "unlocalized_genome_candidates",
         }
         status = (
@@ -916,7 +1017,8 @@ def _write_table(path, header, rows):
 def _audit_rows(db, names):
     query = """SELECT c.group_id,g.status,g.reasons,r.comp,r.name,r.present,r.accession,r.start,r.end,
         r.selectors,m.lookup,m.raw,m.status,c.reason,r.declared,r.identity_status FROM mappings m JOIN rows r ON m.row_key=r.id
-        LEFT JOIN candidates c ON m.status='' AND c.row_key=r.id AND c.protein=m.protein AND c.genome=m.genome AND c.locus=m.locus
+        LEFT JOIN candidates c ON (m.status='' OR c.incomplete=1) AND coalesce(json_extract(m.raw,'$.verification_only'),0)=0
+        AND c.row_key=r.id AND c.protein=m.protein AND c.genome=m.genome AND c.locus=m.locus
         LEFT JOIN groups g ON c.group_id=g.group_id WHERE r.anchor=0
         ORDER BY r.comp,r.name,c.group_id,c.protein,m.lookup,m.raw"""
     for (
@@ -943,16 +1045,18 @@ def _audit_rows(db, names):
             if issue == "multiple_mappings" and mstatus == "unlinked_accession"
             else mstatus or role
         )
+        if role == "orthogroup_mismatch":
+            status = role
         confidence = "uncertain"
         if role == "orthogroup_mismatch":
             confidence = "role_excluded"
-        elif gstatus == "resolved" and role == "profile_member":
+        elif gstatus == "resolved" and not mstatus and role == "profile_member":
             confidence = (
                 "neighborhood_and_family_profile"
                 if data.get("neighborhood_id")
                 else "genome_and_family_profile"
             )
-        elif gstatus == "resolved" and role == "supported":
+        elif gstatus == "resolved" and not mstatus and role == "supported":
             confidence = (
                 "neighborhood_and_role_supported"
                 if data.get("neighborhood_id")
@@ -962,7 +1066,7 @@ def _audit_rows(db, names):
             gid,
             gstatus or "unplaced",
             greasons or "",
-            int(gstatus == "resolved" and role in ("supported", "profile_member")),
+            int(gstatus == "resolved" and not mstatus and role in ("supported", "profile_member")),
             comp,
             names.get(comp, comp),
             row,
@@ -1048,9 +1152,10 @@ def _assembly_aliases(db, resolver):
                 (original,),
             ):
                 data = json.loads(raw)
+                if data.get("assembly_id") == original:
+                    data["canonical_assembly_id"] = canonical
                 data.update(
                     genome_id=canonical,
-                    assembly_id=canonical,
                     assembly_aliases=[original, canonical],
                 )
                 data["cross_references"] = [
@@ -1164,6 +1269,8 @@ def generate_evidence(
                 db, expected, decisions, automatic_profiles, orthology_scope
             )
         _classify(db, expected, profile_roles, disagreement)
+        if automatic:
+            _retain_incomplete_placements(db, expected)
         _summarize_groups(db)
         db.executescript("""
             CREATE TEMP TABLE tiers AS SELECT g.group_id, CASE

@@ -23,6 +23,8 @@ The ENA field schemas list the five fields requested for sequence annotations. T
 
 RNAcentral's public location schema also distinguishes an assembly display name from its optional GCA accession. A display name alone leaves the genomic mapping unresolved. [RNAcentral location schema](https://github.com/RNAcentral/rnacentral-data-schema/blob/master/sections/location.json)
 
+Each RNAcentral page must provide its next-page link or an explicit terminal `null`. The resolver checks consecutive pages for the same species-specific record and rejects repeated locations. When the service supplies a total, it must remain constant and match the number of distinct locations. An incomplete response or interrupted read after bounded retries is recorded as a provider failure and can be retried. Previously completed, independent lookups remain available. Older RNAcentral cache entries require a connected refresh because their pagination was unverified. Other validated source entries in the same snapshot remain usable. [RNAcentral pagination](https://docs.rnacentral.org/api.html#pagination)
+
 ## Supply a curated mapping
 
 An existing mapping file can supply facts for local identifiers, unsupported databases or unresolved alternatives.

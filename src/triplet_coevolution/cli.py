@@ -10,7 +10,6 @@ from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
-import numpy as np
 import typer
 
 from triplet_coevolution import __version__
@@ -21,8 +20,9 @@ from triplet_coevolution.inference.weights import sequence_weights
 from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.export import write_triplet_mi_tables
 from triplet_coevolution.io.metadata import read_triplet_table
-from triplet_coevolution.msa.masking import apply_triplet_masks, column_mask
+from triplet_coevolution.msa.masking import apply_triplet_masks
 from triplet_coevolution.msa.qc import triplet_qc
+from triplet_coevolution.msa.support import MissingRowSupport, retained_sites, site_masks
 from triplet_coevolution.msa.synchronize import synchronize
 from triplet_coevolution.reporting.html import write_report
 from triplet_coevolution.reporting.network import ranked_tables, write_network
@@ -135,26 +135,6 @@ def _row_count(path: Path, fmt: str) -> int:
         rows = csv.reader(handle, delimiter="\t" if fmt == "tsv" else ",")
         next(rows)  # Header is present even when there are no qualifying pairs.
         return sum(1 for _ in rows)
-
-
-def _site_masks(path, components):
-    """Map a prespecified panel to the unchanged input alignment coordinate systems."""
-    masks = {c.name: np.zeros(c.n_sites, dtype=bool) for c in components}
-    with path.open(encoding="utf-8-sig", newline="") as stream:
-        reader = csv.DictReader(stream, delimiter="\t", strict=True)
-        if reader.fieldnames != ["component", "original_column"]:
-            raise ValueError("site panel requires a TSV header: component, original_column")
-        for row in reader:
-            name, col = row["component"], row["original_column"]
-            if None in row or name not in masks or not col or not col.isascii() or not col.isdigit():
-                raise ValueError(f"invalid site panel record on line {reader.line_num}")
-            index = int(col) - 1
-            if not 0 <= index < len(masks[name]) or masks[name][index]:
-                raise ValueError(f"duplicate or out-of-range site panel column {name} {col}")
-            masks[name][index] = True
-    if any(not mask.any() for mask in masks.values()):
-        raise ValueError("site panel must include at least one original column per component")
-    return tuple(masks[c.name] for c in components)
 
 
 @app.command("analyze")
@@ -348,7 +328,7 @@ def analyze(
             for name, molecule in zip(("A", "B", "C"), (a_type, b_type, c_type))
         )
         table = read_triplet_table(paths["matches"])
-        panel_masks = _site_masks(paths["site_panel"], original) if site_panel is not None else None
+        panel_masks = site_masks(paths["site_panel"], original) if site_panel is not None else None
         strata = None
         if strata_column is not None:
             if strata_column not in table.extra_columns:
@@ -377,12 +357,10 @@ def analyze(
             "max_gap_fraction": max_gap_fraction,
             "max_missing_fraction": max_missing_fraction,
         }
-        keep = tuple(column_mask(part, **mask_options) for part in qc.components)
-        if panel_masks is not None:
-            keep = tuple(usable & selected for usable, selected in zip(keep, panel_masks))
+        keep = retained_sites(qc, mask_options, panel_masks)
         for part, mask in zip(qc.components, keep):
             if not mask.any():
-                raise ValueError(
+                raise MissingRowSupport(
                     f"QC removed every column in component {part.name}. Check the masking thresholds."
                 )
 

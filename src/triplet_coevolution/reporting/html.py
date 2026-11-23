@@ -198,6 +198,26 @@ def attach_workflow_report(directory: Path, workflow_summary: dict, matching_qc:
                  workflow_section=_workflow_section(workflow_summary, matching_qc))
 
 
+def row_support_section(workflow, prefix=""):
+    support = workflow.get("observation_qc")
+    if not support:
+        return ""
+    rows = ((r["observation_id"], r["components"], r["pass"]) for r in support["examples"])
+    table = _table(["Excluded observation", "Components with no usable residue", "QC pass"], rows)
+    links = " · ".join((
+        _link(prefix + support["table"], "All row exclusions"),
+        _link(prefix + support["matches"], "Eligible observations"),
+        _link(prefix + support["columns"], "Final original columns"),
+    ))
+    return (
+        '<section><h2>Observation quality control</h2>'
+        f'<p>{support["eligible_observations"]:,} of {support["input_observations"]:,} candidate '
+        f'observations retained a canonical residue in every component. '
+        f'{support["excluded_observations"]:,} were excluded. The table shows up to ten exclusions.</p>'
+        + table + f'<p>{links}</p></section>'
+    )
+
+
 def attach_evidence_report(directory: Path, workflow: dict) -> None:
     """Connect a scored Stockholm subset to its original row, group and coordinate evidence."""
     summary = json.loads((directory / "run_summary.json").read_text(encoding="utf-8"))
@@ -209,6 +229,11 @@ def attach_evidence_report(directory: Path, workflow: dict) -> None:
              ("reference_coordinates", "Reference coordinates"), ("matches", "Matched observations"),
              ("analyze_args", "Replay analysis"))
     panel_text = ""
+    status_text = ""
+    if workflow.get("status"):
+        status_text = (f'<p>Workflow status: {_text(workflow["status"])}. '
+                       f'{_text(workflow["reason"])} '
+                       + _link("../report.html", "Workflow status and evidence") + '</p>')
     if (panel := workflow.get("scoring_panel", {})).get("status") == "selected":
         widths = ", ".join(f"{key} {width}" for key, width in panel["selected_widths"].items())
         panel_text = (f'<p>This bounded panel scored {summary["matched_observations"]:,} observations. '
@@ -218,9 +243,11 @@ def attach_evidence_report(directory: Path, workflow: dict) -> None:
         '<section id="workflow"><h2>Stockholm families and matching evidence</h2>' + table
         + f'<p>{workflow["counts"]["resolved_groups"]:,} groups supplied complete matches.</p>'
         + panel_text
+        + status_text
         + '<p class="audit-links">' + "".join(_link("../" + workflow[key], label) for key, label in links)
         + _link("../workflow_summary.json", "Workflow manifest") + '</p></section>'
     )
+    section += row_support_section(workflow, "../")
     write_report(directory, summary, ranked_tables(summary), workflow_section=section)
 
 

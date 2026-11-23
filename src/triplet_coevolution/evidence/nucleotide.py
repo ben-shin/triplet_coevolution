@@ -6,9 +6,10 @@ import sqlite3
 import time
 from collections import Counter
 from datetime import UTC, datetime
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from .identifiers import explicit_accession
@@ -23,6 +24,7 @@ _INSDC = re.compile(r"(?:[A-Z]\d{5}|[A-Z]{2}\d{6,8}|[A-Z]{4}\d{8,10}|[A-Z]{6}\d{
 _REFSEQ = re.compile(r"(?:N[CGTW]_\d{6,9}|NZ_(?:\d{6,9}|[A-Z]{2,6}\d{6,11}))(?:\.\d+)?")
 _URS = re.compile(r"URS[A-F0-9]{10}(?:_[1-9]\d*)?")
 _LIMIT = 4 * 1024 * 1024
+_NOT_FOUND = object()
 
 
 def nucleotide_key(value, *, allow_ambiguous=False):
@@ -52,6 +54,10 @@ def _request_json(url):
             content = response.read(_LIMIT + 1)
             if len(content) > _LIMIT:
                 raise ProviderError("metadata response exceeded 4 MiB")
+            expected = response.headers.get("Content-Length")
+            if expected is not None and int(expected) > len(content):
+                # HTTPResponse.read(amount) can return short without raising on EOF.
+                raise IncompleteRead(content, int(expected) - len(content))
             return json.loads(content)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ProviderError("invalid metadata JSON") from exc
@@ -106,7 +112,7 @@ class NucleotideResolver:
                 return _request_json(url)
             except HTTPError as exc:
                 if exc.code == 404 and allow_404:
-                    return None
+                    return _NOT_FOUND
                 if attempt or exc.code not in {408, 429, 500, 502, 503, 504}:
                     raise ProviderError(f"{service} HTTP {exc.code}") from exc
                 try:
@@ -118,7 +124,7 @@ class NucleotideResolver:
                 if delay > 5:
                     raise ProviderError(f"{service} requests retry after {int(delay)}s") from exc
                 time.sleep(delay)
-            except (OSError, URLError) as exc:
+            except (OSError, URLError, HTTPException) as exc:
                 if attempt:
                     raise ProviderError(f"{service} transport error: {exc}") from exc
                 time.sleep(1)
@@ -154,7 +160,8 @@ class NucleotideResolver:
                     )
                 self.db.commit()
             except (ValueError, TypeError, KeyError, IndexError, AttributeError, OSError) as exc:
-                self.failures.setdefault(service, str(exc))
+                self.db.rollback()
+                self.failures.setdefault(service, str(exc) or type(exc).__name__)
                 for key in chunk:
                     result[key] = {
                         "status": "provider_unavailable",
@@ -246,7 +253,7 @@ class NucleotideResolver:
         data = self.request(
             "NCBI", f"{NCBI}/sequence_accession/{ac}/sequence_assemblies", allow_404=True
         )
-        assemblies = [] if data is None or data == {} else _items(data, "accessions")
+        assemblies = [] if data is _NOT_FOUND or data == {} else _items(data, "accessions")
         if any(not ASSEMBLY.fullmatch(a) for a in assemblies):
             raise ProviderError("invalid NCBI assembly membership")
         return assemblies
@@ -258,21 +265,50 @@ class NucleotideResolver:
         url = (
             "https://rnacentral.org" + path + "?" + urlencode({"format": "json", "page_size": 100})
         )
-        locations, seen = [], set()
+        locations, seen, loci = [], set(), set()
+        expected = None
         while url:
             parsed = urlparse(url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
             if (
                 (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"))
                 != ("https", "rnacentral.org", path)
+                or parsed.fragment
+                or set(params) - {"format", "page_size", "page"}
+                or params.get("format", ["json"]) != ["json"]
+                or params.get("page_size", ["100"]) != ["100"]
+                or (seen and params.get("page") != [str(len(seen) + 1)])
                 or url in seen
                 or len(seen) >= 50
             ):
                 raise ProviderError("invalid or incomplete RNAcentral pagination")
             seen.add(url)
+            if len(seen) > 1:
+                # Keep the original page size even if a returned link omits it.
+                url = (
+                    RNACENTRAL
+                    + f"/{urs}/genome-locations/{taxon}?"
+                    + urlencode({"format": "json", "page_size": 100, "page": len(seen)})
+                )
             data = self.request("RNAcentral", url, allow_404=len(seen) == 1)
-            if data is None:
+            if data is _NOT_FOUND:
                 break
-            for loc in _items(data, "results"):
+            page = _items(data, "results")
+            if "next" not in data or (
+                data["next"] is not None and not isinstance(data["next"], str)
+            ):
+                raise ProviderError("missing or invalid RNAcentral next-page marker")
+            following = data["next"]
+            if following == "" or (not page and (following is not None or len(seen) > 1)):
+                raise ProviderError("incomplete RNAcentral location page")
+            total = data.get("count")
+            if "count" in data and (type(total) is not int or total < 0):
+                raise ProviderError("invalid RNAcentral location count")
+            if len(seen) == 1:
+                expected = total
+            elif total != expected:
+                raise ProviderError("RNAcentral location count changed during pagination")
+            for loc in page:
                 assembly = loc.get("assembly")
                 asm = (
                     assembly.get("gca_accession")
@@ -289,6 +325,18 @@ class NucleotideResolver:
                 strand = {"1": "+", "+": "+", "-1": "-", "-": "-"}.get(str(loc.get("strand")))
                 if min(start, end) < 0 or end < start or not strand or not loc.get("chromosome"):
                     raise ProviderError("RNAcentral location lacks usable coordinates/strand")
+                locus = (
+                    asm or json.dumps(assembly, sort_keys=True),
+                    str(loc["chromosome"]),
+                    start,
+                    end,
+                    strand,
+                )
+                if locus in loci:
+                    raise ProviderError(
+                        "duplicate RNAcentral genomic location in paginated results"
+                    )
+                loci.add(locus)
                 locations.append(
                     {
                         "assembly_id": asm,
@@ -301,7 +349,11 @@ class NucleotideResolver:
                         "reported_assembly": assembly,
                     }
                 )
-            url = data.get("next")
+            if expected is not None and (
+                len(locations) > expected or (following is None) != (len(locations) == expected)
+            ):
+                raise ProviderError("incomplete RNAcentral location count or page chain")
+            url = following
         return {
             key: {
                 "source": "RNAcentral",
@@ -324,7 +376,20 @@ class NucleotideResolver:
                     if "_" not in k:
                         result[k] = {"source": service, "status": "rnacentral_taxon_required"}
                         subset.remove(k)
-            result.update(self._cached(service + ":", subset, fn, service=service, size=size))
+            prefix = "RNAcentral:v2:" if service == "RNAcentral" else service + ":"
+            records = self._cached(prefix, subset, fn, service=service, size=size)
+            if service == "RNAcentral" and not self.live:
+                for key, payload in records.items():
+                    if (
+                        payload.get("status") == "nucleotide_cache_miss"
+                        and self.db.execute(
+                            "SELECT 1 FROM annotations WHERE key=?", ("RNAcentral:" + key,)
+                        ).fetchone()
+                    ):
+                        error = "older RNAcentral cache lacks verified pagination; refresh with a connected run"
+                        self.failures[service] = error
+                        records[key] = {"status": "provider_unavailable", "provider_error": error}
+            result.update(records)
         # Cache sequence metadata and individual assembly memberships independently.
         # A failed link lookup must not discard other completed records from a batch.
         unplaced = {

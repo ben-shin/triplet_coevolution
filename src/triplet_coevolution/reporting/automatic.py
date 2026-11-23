@@ -1,6 +1,6 @@
 """Write the local landing page for every terminal family-run outcome."""
 
-from triplet_coevolution.reporting.html import STYLE, _link, _table, _text
+from triplet_coevolution.reporting.html import STYLE, _link, _table, _text, row_support_section
 
 GUIDANCE = {
     "no_matches": "Open the group and candidate evidence tables to see missing identities, "
@@ -69,6 +69,7 @@ def write_workflow_report(directory, summary):
         if issues := summary["providers"].get("lookup_status_counts"):
             body.append(_table(["Lookup or placement issue", "Affected rows"], issues.items()))
         body.append("</section>")
+    body.append(row_support_section(summary))
     notes = list(summary.get("analysis_blockers", ()))
     if summary.get("cache_warning"):
         notes.append(f"Saving the reusable cache failed. {summary['cache_warning']}")

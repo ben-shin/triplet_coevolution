@@ -14,6 +14,7 @@ import typer
 
 from triplet_coevolution import __version__
 from triplet_coevolution.inference.advanced import ModelFitError
+from triplet_coevolution.msa.support import MissingRowSupport
 from triplet_coevolution.reporting.automatic import write_workflow_report
 from triplet_coevolution.workflow import _analyze, _write_analysis_args, _write_json
 
@@ -32,7 +33,7 @@ DEFAULT_LIMITS = {"pair_cells": 1_000_000, "weight_cells": 4_000_000_000}
 
 def _terminal(summary, status, reason):
     summary.update(status=status, exit_code=EXIT_CODES[status], reason=reason, report="report.html")
-    if status == "insufficient_data" and not summary.get("analysis_summary"):
+    if status in {"insufficient_data", "analysis_error", "resource_limit"}:
         summary["ready_for_analysis"] = False
         if reason not in summary["analysis_blockers"]:
             summary["analysis_blockers"].append(reason)
@@ -91,6 +92,8 @@ def _score(stage, out, summary, kwargs, settings, plan):
     while True:
         effective = {**kwargs, **settings}
         replay = "panel_analyze_args.json" if "scoring_panel" in summary else "analyze_args.json"
+        if "observation_qc" in summary:
+            replay = "scored_analyze_args.json"
         _write_analysis_args(stage / "prepared", effective, replay)
         summary["analyze_args"] = f"prepared/{replay}"
         _record_settings(plan, settings)
@@ -119,8 +122,25 @@ def _score(stage, out, summary, kwargs, settings, plan):
                     settings.pop(key, None)
                     kwargs.pop(key, None)
                 continue
-            if isinstance(cause, ValueError) and str(cause).startswith("QC removed every column"):
-                _terminal(summary, "insufficient_data", str(cause))
+            if isinstance(cause, MissingRowSupport) and "observation_qc" not in summary:
+                from triplet_coevolution.automatic_qc import filter_observations
+
+                revised, audit = filter_observations(stage / "prepared", effective)
+                summary["observation_qc"] = audit
+                eligible = audit["eligible_observations"]
+                minimum = settings.get("min_valid", 2)
+                if eligible < minimum:
+                    summary["analyze_args"] = None
+                    _terminal(
+                        summary,
+                        "insufficient_data",
+                        f"After synchronized observation QC, "
+                        f"{eligible} observations remain and min_valid requires {minimum}.",
+                    )
+                    return
+                kwargs.update(revised)
+                settings.pop("site_panel", None)
+                continue
             elif isinstance(cause, ValueError) and str(cause).startswith(
                 "the permutation null requires"
             ):
@@ -136,19 +156,27 @@ def _score(stage, out, summary, kwargs, settings, plan):
         analysis_summary="analysis/run_summary.json", score_report="analysis/report.html"
     )
     summary["scored_scope"] = {
-        "selection": "bounded_panel" if "scoring_panel" in summary else "full",
+        "selection": "bounded_panel"
+        if "scoring_panel" in summary
+        else ("qc_supported" if "observation_qc" in summary else "full"),
         "observations": analysis["matched_observations"],
         "retained_columns": {n: c["retained_sites"] for n, c in analysis["components"].items()},
     }
-    attach_evidence_report(stage / "analysis", summary)
     if not any(t["rows"] for t in analysis["outputs"]["tables"].values()):
         _terminal(summary, "insufficient_data", "No pair passed the configured output thresholds.")
+    elif "observation_qc" in summary:
+        _terminal(
+            summary,
+            "partial",
+            "Scoring finished on observations with usable residues in all three components.",
+        )
     elif "scoring_panel" in summary:
         _terminal(summary, "partial", "Scoring finished on a bounded panel of the resolved data.")
     elif plan["skipped"]:
         _terminal(summary, "partial", "Scoring finished with the method omissions listed below.")
     else:
         _terminal(summary, "complete", "Scoring finished for the resolved observations.")
+    attach_evidence_report(stage / "analysis", summary)
 
 
 def _bounded_score(stage, out, summary, kwargs, plan, plots):

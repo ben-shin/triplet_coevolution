@@ -1,6 +1,8 @@
 import csv
 import json
 from contextlib import closing
+from http.client import BadStatusLine, IncompleteRead
+from io import BytesIO
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
@@ -313,3 +315,247 @@ def test_unresolved_ncbi_membership_preserves_completed_siblings_and_can_retry(
         replay = client.resolve(keys)
     assert replay[keys[0]] == first[keys[0]]
     assert replay[keys[1]]["status"] == "nucleotide_cache_miss"
+
+
+_URS = "URS000000000A_91"
+_LOCATION_URL = nt.RNACENTRAL + "/URS000000000A/genome-locations/91"
+
+
+def _page(starts, *, following=None, count=None):
+    locations = [
+        {"assembly": ASSEMBLY, "chromosome": "II", "start": start, "end": start + 20, "strand": "+"}
+        for start in starts
+    ]
+    return {
+        "results": locations,
+        "next": following,
+        **({"count": count} if count is not None else {}),
+    }
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [_page([10], count=2)],
+        [{"count": 1, "results": _page([10])["results"]}],
+        [_page([10], following="")],
+        [_page([10], count=1, following=_LOCATION_URL + "?page=2")],
+        [_page([10], count=2, following=_LOCATION_URL + "?page=2"), _page([80, 95], count=3)],
+        [_page([10], count=2, following=_LOCATION_URL + "?page=2"), _page([80])],
+        [_page([10], count=2, following=_LOCATION_URL + "?page=2"), _page([10], count=2)],
+        [_page([10], following=_LOCATION_URL + "?page=3")],
+        [_page([10], following=_LOCATION_URL + "?page=2&page_size=200")],
+        [_page([10], following=_LOCATION_URL + "?page=2&chromosome=II")],
+        [_page([10], following=_LOCATION_URL + "?page=2"), _page([])],
+        [_page([10, 10])],
+        [None],
+    ],
+)
+def test_incomplete_rna_location_result_is_neither_selected_nor_cached(
+    tmp_path, monkeypatch, pages
+):
+    responses = iter(pages)
+    monkeypatch.setattr(nt, "_request_json", lambda url: next(responses))
+    monkeypatch.setattr(nt.time, "sleep", lambda _: None)
+    cache = tmp_path / "rna.sqlite"
+    s = generate(
+        tmp_path / "failed",
+        annotated(c=[EvidenceRow(_URS)]),
+        nucleotide_cache=cache,
+        nucleotide_online=True,
+    )
+    assert s["providers"]["status"] == "partial" and "RNAcentral" in s["providers"]["failures"]
+    assert s["counts"]["resolved_groups"] == 0
+    assert any(
+        r["role_status"] == "provider_unavailable" for r in table(tmp_path / "failed/evidence.tsv")
+    )
+    with closing(nt.NucleotideResolver(cache, False)) as client:
+        assert client.resolve([_URS])[_URS]["status"] == "nucleotide_cache_miss"
+
+
+@pytest.mark.parametrize(
+    "pages,expected",
+    [
+        ([_page([], count=0)], []),
+        ([_page([])], []),
+        (
+            [_page([10], count=2, following=_LOCATION_URL + "?page=2"), _page([80], count=2)],
+            [10, 80],
+        ),
+        ([_page([10], following=_LOCATION_URL + "?page=2"), _page([80])], [10, 80]),
+    ],
+)
+def test_complete_rna_locations_replace_legacy_positive_or_negative(
+    tmp_path, monkeypatch, pages, expected
+):
+    cache = tmp_path / "rna.sqlite"
+    with closing(nt.NucleotideResolver(cache, True)) as client:
+        client.db.execute(
+            "INSERT INTO annotations VALUES (?, ?)",
+            (
+                "RNAcentral:" + _URS,
+                json.dumps(
+                    {
+                        "source": "RNAcentral",
+                        "status": "mapped" if not expected else "nucleotide_not_found",
+                        "placements": _page([999])["results"] if not expected else [],
+                    }
+                ),
+            ),
+        )
+        client.db.commit()
+    before = cache.read_bytes()
+    with closing(nt.NucleotideResolver(cache, False)) as client:
+        legacy = client.resolve([_URS])[_URS]
+        assert legacy["status"] == "provider_unavailable" and "older" in legacy["provider_error"]
+    assert cache.read_bytes() == before
+    replies = iter(pages)
+    monkeypatch.setattr(nt, "_request_json", lambda url: next(replies))
+    monkeypatch.setattr(nt.time, "sleep", lambda _: None)
+    with closing(nt.NucleotideResolver(cache, True)) as client:
+        verified = client.resolve([_URS])[_URS]
+        assert not client.failures
+        assert [p["genomic_start"] for p in verified["placements"]] == expected
+        assert verified["status"] == ("mapped" if expected else "nucleotide_not_found")
+    before = cache.read_bytes()
+    with closing(nt.NucleotideResolver(cache, False)) as client:
+        assert client.resolve([_URS])[_URS] == verified and not client.failures
+    assert cache.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "error", [IncompleteRead(b"part", 8), BadStatusLine("incomplete response")]
+)
+@pytest.mark.parametrize("service", ["ENA", "UniProt"])
+def test_http_read_failures_retry_and_preserve_same_batch_or_cached_siblings(
+    tmp_path, monkeypatch, error, service
+):
+    calls = []
+
+    class Response(BytesIO):
+        def __init__(self, body=None):
+            self.headers = {}
+            self.ok = body is not None
+            super().__init__(json.dumps(body).encode())
+
+        def read(self, *args):
+            if not self.ok:
+                raise error
+            return super().read(*args)
+
+    def open_url(req, *, timeout):
+        calls.append(req.full_url)
+        if service == "UniProt" and "sec_acc" not in req.full_url:
+            return Response(
+                {"results": [{"primaryAccession": "P12345", "uniProtkbId": "FIX_YEAST"}]}
+            )
+        return Response()
+
+    source = nt if service == "ENA" else uniprot
+    monkeypatch.setattr(source, "urlopen", open_url)
+    monkeypatch.setattr(source.time, "sleep", lambda _: None)
+    cache = tmp_path / "lookup.sqlite"
+    if service == "ENA":
+        rows = annotated(c=[EvidenceRow("AB123456.1/1-8")])
+        summary = generate(tmp_path / "audit", rows, nucleotide_cache=cache, nucleotide_online=True)
+        assert len(calls) == 2
+        with closing(nt.NucleotideResolver(cache, False)) as replay:
+            assert replay.resolve(["AB123456.1"])["AB123456.1"]["status"] == "nucleotide_cache_miss"
+    else:
+        rows = annotated()
+        rows["A"].extend([EvidenceRow("P12345"), EvidenceRow("P23456")])
+        summary = generate(tmp_path / "audit", rows, cache=cache, uniprot=True)
+        assert len(calls) == 5
+        with closing(uniprot.Resolver(cache, False)) as replay:
+            stored = replay.resolve(["P12345", "P23456"])
+            assert (
+                set(stored) == {"P12345"}
+                and stored["P12345"]["mappings"][0]["protein_id"] == "P12345"
+            )
+    assert summary["providers"]["status"] == "partial"
+    assert (
+        sum(
+            r["role_status"] == "provider_unavailable"
+            for r in table(tmp_path / "audit/evidence.tsv")
+        )
+        == 1
+    )
+
+
+def test_short_bounded_read_with_valid_json_and_truncated_content_length(monkeypatch):
+    class Response(BytesIO):
+        def __init__(self, body):
+            super().__init__(body)
+            self.headers = {"Content-Length": "60"}
+
+    monkeypatch.setattr(nt, "urlopen", lambda req, timeout: Response(b"[]"))
+    monkeypatch.setattr(nt.time, "sleep", lambda _: None)
+    with closing(nt.NucleotideResolver(None, True)) as client:
+        response = client.resolve(["AB123456"])
+        assert response["AB123456"]["status"] == "provider_unavailable"
+        assert client.stats["ENA_requests"] == 2
+
+
+def test_proteome_fetch_failure_keeps_only_fully_verified_primary_results(tmp_path, monkeypatch):
+    cache = tmp_path / "primary.sqlite"
+
+    def primary(ac, up):
+        return {
+            "primaryAccession": ac,
+            "uniProtkbId": ac + "_FIX",
+            "uniProtKBCrossReferences": [{"database": "Proteomes", "id": p} for p in up],
+        }
+
+    def respond(url):
+        if "/proteomes/" in url:
+            raise BadStatusLine("unreadable proteome response")
+        return {
+            "results": [
+                primary("P12345", ["UP000000001"]),
+                primary("P23456", ["UP000000002", "UP000000001"]),
+            ]
+        }, {}
+
+    monkeypatch.setattr(uniprot, "_request", respond)
+    with closing(uniprot.Resolver(cache, True, audit_errors=True)) as client:
+        client._store("proteome:UP000000001", [ASSEMBLY, "release", "date"])
+        client.db.commit()
+        result = client.resolve(["P12345", "P23456"])
+        assert result["P12345"]["mappings"][0]["genome_id"] == ASSEMBLY
+        assert "provider_error" in result["P23456"]
+    with closing(uniprot.Resolver(cache, False)) as client:
+        assert set(client.resolve(result)) == {"P12345"}
+
+
+@pytest.mark.parametrize("service", ["ENA", "UniProt"])
+def test_single_read_interruption_recovers_before_circuit_or_negative_cache(
+    tmp_path, monkeypatch, service
+):
+    calls = []
+
+    class Response(BytesIO):
+        def __init__(self, body):
+            super().__init__(body)
+            self.headers = {}
+
+        def read(self, *args):
+            if len(calls) == 1:
+                raise IncompleteRead(b"part", 20)
+            return super().read(*args)
+
+    def open_url(req, **kwargs):
+        calls.append(req.full_url)
+        return Response(b"[]" if service == "ENA" else b'{"results":[]}')
+
+    source = nt if service == "ENA" else uniprot
+    monkeypatch.setattr(source, "urlopen", open_url)
+    monkeypatch.setattr(source.time, "sleep", lambda _: None)
+    if service == "ENA":
+        with closing(nt.NucleotideResolver(tmp_path / "cache", True)) as client:
+            result = client.resolve(["AB123456.1"])
+            assert result["AB123456.1"]["status"] == "nucleotide_not_found" and not client.failures
+    else:
+        with closing(uniprot.Resolver(tmp_path / "cache", True, audit_errors=True)) as client:
+            result = client.resolve(["TEST_YEAST"])
+            assert result["TEST_YEAST"]["mappings"] == [] and not client.failure
+    assert len(calls) == 2

@@ -3,7 +3,11 @@
 import csv
 import gzip
 import json
+import sqlite3
+from contextlib import closing
 from html.parser import HTMLParser
+from http.client import IncompleteRead
+from io import BytesIO
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -12,6 +16,8 @@ from typer.testing import CliRunner
 from triplet_coevolution.cli import app
 from triplet_coevolution.evidence import nucleotide, uniprot
 from triplet_coevolution.io.alignments import read_msa
+
+UNIPROT_REQUEST = uniprot._request
 
 
 def _no_request(*_args, **_kwargs):
@@ -191,6 +197,37 @@ def test_explained_zero_and_partial_results(tmp_path, monkeypatch):
     assert (failed / summary["evidence"]).is_file() and not (failed / "analysis").exists()
 
 
+def test_truncated_public_response_finishes_with_a_closed_cache_and_report(tmp_path, monkeypatch):
+    class Truncated(BytesIO):
+        def read(self, *args, **kwargs):
+            raise IncompleteRead(b"{", 37)
+
+    responses = []
+
+    def transport(*args, **kwargs):
+        response = Truncated()
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(uniprot, "_request", UNIPROT_REQUEST)
+    monkeypatch.setattr(uniprot, "urlopen", transport)
+    monkeypatch.setattr(uniprot.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(nucleotide, "_request_json", lambda url: [])
+    base, out = tmp_path / "input", tmp_path / "out"
+    _folders(base, 3, local=False)
+    result = _run(base, out)
+    assert result.exit_code == 4, (result.output, result.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "provider_failure" and not summary["ready_for_analysis"]
+    assert summary["providers"]["failures"]["UniProtKB"] and (out / summary["report"]).is_file()
+    assert (out / summary["evidence"]).is_file() and not (out / "analysis").exists()
+    assert len(responses) == 4 and all(r.closed for r in responses)
+    cache = out / "metadata/uniprot.sqlite"
+    with closing(sqlite3.connect(cache)) as db:
+        db.execute("begin exclusive")
+        assert db.execute("select count(*) from lookups").fetchone() == (0,)
+
+
 def test_input_choice_and_failure_report(tmp_path):
     base = tmp_path / "input"
     _folders(base)
@@ -336,3 +373,134 @@ def test_oversize_default_scores_bounded_panel_and_replays(tmp_path, monkeypatch
     assert invoked.exit_code == 0, invoked.output
     for name in ("mi_ab.tsv", "dca_bc.tsv", "permutation_threebody.tsv"):
         assert (out / "analysis" / name).read_bytes() == (replay / name).read_bytes()
+
+
+def _gappy_project(base, sequences, analysis=None):
+    expected = {}
+    for name, seqs, folder, profile in zip(
+        "ABC", sequences, ("Alpha", "Beta", "Gamma"), ("PF98001", "PF98002", "RF98003"), strict=True
+    ):
+        dest = base / folder
+        dest.mkdir(parents=True)
+        lines = ["# STOCKHOLM 1.0", f"#=GF AC {profile}.2"]
+        expected[name] = [f"fixture:{name}"]
+        for i, sequence in enumerate(seqs, 1):
+            row = f"{name}_obs{i}"
+            lines.extend(
+                (
+                    f"#=GS {row} ASSEMBLY GCA_{i:09}.1",
+                    f"#=GS {row} LOCUS {row}",
+                    f"#=GS {row} ORTHOGROUP fixture:{name}",
+                    f"{row} {sequence}",
+                )
+            )
+        (dest / "family.sto").write_text("\n".join([*lines, "//", ""]))
+    (base / "Alpha/component.json").write_text(json.dumps({"reference_id": "A_obs1"}))
+    (base / "project.json").write_text(
+        json.dumps({"expected_orthogroups": expected, "analysis": analysis or {}})
+    )
+
+
+def test_post_mask_row_filter_stratified_replay(tmp_path, monkeypatch):
+    base, out = tmp_path / "in", tmp_path / "out"
+    _gappy_project(
+        base,
+        (
+            ["?--A", "KKF-", "GGY-", "FKG-", "QWK-", "GWD-"],
+            ["MEAE", "HEMI", "MIDY", "GMEI", "MWDW", "WEID"],
+            ["ACUG", "ACGG", "GUAA", "UUAC", "UCGA", "AGCC"],
+        ),
+        {"strata_column": "role_evidence", "permutations": 3, "site_panel": "sites.tsv"},
+    )
+    (base / "sites.tsv").write_text(
+        "component\toriginal_column\nA\t1\nA\t3\nA\t4\nB\t2\nB\t3\nC\t3\n"
+    )
+    run = _run(base, out, "--offline")
+    assert run.exit_code == 3, (run.output, run.exception)
+    workflow = _json(out / "workflow_summary.json")
+    assert workflow["status"] == "partial" and workflow["ready_for_analysis"]
+    assert workflow["counts"]["resolved_groups"] == 6 and workflow["analysis_blockers"] == []
+    audit = workflow["observation_qc"]
+    assert audit["eligible_observations"] == 5 and audit["excluded_observations"] == 1
+    with (out / audit["table"]).open(newline="") as fh:
+        (record,) = csv.DictReader(fh, delimiter="\t")
+    assert (record["a_id"], record["components_without_canonical_residues"]) == ("A_obs1", "A")
+    full = read_msa(out / "prepared/A.sto", "A", "protein")
+    assert len(full.ids) == 6 and "A_obs1" in full.ids
+    assert workflow["scored_scope"] == {
+        "selection": "qc_supported",
+        "observations": 5,
+        "retained_columns": {"A": 2, "B": 2, "C": 1},
+    }
+    result = _json(out / workflow["analysis_summary"])
+    assert result["components"]["A"]["reference_id"] == "A_obs1"
+    assert result["components"]["A"]["retained_columns"] == [1, 3]
+    assert result["advanced"]["settings"]["strata_column"] == "role_evidence"
+    for report in (out / "report.html", out / "analysis/report.html"):
+        html = report.read_text(encoding="utf-8")
+        assert record["observation_id"] in html and "observation_qc.tsv" in html
+    args = _json(out / workflow["analyze_args"])
+    assert "scored_matches.tsv" in args and "scored_columns.tsv" in args
+    monkeypatch.chdir(out / "prepared")
+    direct = tmp_path / "replay"
+    assert CliRunner().invoke(app, [*args, "--out", str(direct)]).exit_code == 0
+    for file in ("mi_ab.tsv", "threebody_abc.tsv", "permutation_mi.tsv", "permutation_dca.tsv"):
+        assert (direct / file).read_bytes() == (out / "analysis" / file).read_bytes()
+    legacy = _json(out / "prepared/analyze_args.json")
+    explicit = CliRunner().invoke(app, [*legacy, "--out", str(tmp_path / "legacy")])
+    assert explicit.exit_code == 1 and "no canonical res" in explicit.output
+
+
+@pytest.mark.parametrize(("b_good", "count"), [({4, 5, 6}, 0), ({3, 4, 5}, 1)])
+def test_insufficient_after_row_qc_keeps_audit(tmp_path, b_good, count):
+    base, out = tmp_path / "in", tmp_path / "out"
+    _gappy_project(
+        base,
+        (
+            ["KKFG" if i in {1, 2, 3} else "????" for i in range(1, 7)],
+            ["QWDD" if i in b_good else "????" for i in range(1, 7)],
+            ["ACUG"] * 6,
+        ),
+    )
+    invoked = _run(base, out, "--offline")
+    assert invoked.exit_code == 3, (invoked.output, invoked.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "insufficient_data" and not summary["ready_for_analysis"]
+    assert summary["reason"] in summary["analysis_blockers"]
+    assert summary["analyze_args"] is None and not (out / "analysis").exists()
+    qc = summary["observation_qc"]
+    assert qc["eligible_observations"] == count and qc["excluded_observations"] == 6 - count
+    assert (out / qc["matches"]).read_text().count("\n") == count + 1
+    assert (out / qc["table"]).read_text().count("\n") == 7 - count
+    assert (out / summary["matches"]).read_text().count("\n") == 7
+
+
+def test_automatic_bounded_panel_filters_unsupported_candidates(tmp_path, monkeypatch):
+    from triplet_coevolution import automatic_run
+
+    base, out = tmp_path / "in", tmp_path / "out"
+    _folders(base, 12)
+    # The sampled source columns for width four are 2 and 4. Two candidates lack both.
+    path = base / "ATPase/family.sto"
+    lines = path.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if any(token in line for token in ("P19001/11-14", "P19002/11-14")):
+            lines[i] = line.replace("/11-14", "/11-12")
+            if not line.startswith("#"):
+                lines[i] = lines[i].split()[0] + " K-E-"
+    path.write_text("\n".join([*lines, ""]))
+    monkeypatch.setattr(automatic_run, "DEFAULT_LIMITS", {"pair_cells": 24, "weight_cells": 800})
+    run = _run(base, out, "--offline")
+    assert run.exit_code == 3, (run.output, run.exception)
+    summary = _json(out / "workflow_summary.json")
+    qc = summary["observation_qc"]
+    assert summary["scored_scope"]["selection"] == "bounded_panel"
+    assert qc["input_observations"] == summary["scoring_panel"]["n_selected"]
+    assert (
+        qc["eligible_observations"]
+        == summary["scored_scope"]["observations"]
+        < qc["input_observations"]
+    )
+    assert (out / summary["full_analyze_args"]).is_file() and (
+        out / "analysis/permutation_mi.tsv"
+    ).is_file()
