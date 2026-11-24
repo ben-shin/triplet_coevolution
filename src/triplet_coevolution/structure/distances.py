@@ -352,6 +352,7 @@ def write_structure_tables(
     distant: float = 25.0,
     distant_metric: str | None = None,
     score_store: ScoreStore | None = None,
+    source_kind: str | None = None,
 ) -> dict:
     """Write mappings, streamed distance and label tables, then publish their verified provenance."""
     directory = Path(directory)
@@ -366,6 +367,10 @@ def write_structure_tables(
     if any((directory / n).exists() for n in names):
         raise FileExistsError("structure outputs already exist")
     source = f"{mapping.structure.entry_id} assembly={mapping.structure.assembly} model={mapping.structure.model} sha256={mapping.structure.sha256}"
+    if source_kind is not None:
+        if source_kind not in {"experimental", "predicted", "synthetic", "unspecified"}:
+            raise ValueError("invalid structure source kind")
+        source = f"{source_kind} {source}"
     counts = {p: Counter() for p in PAIRS}
     with tempfile.TemporaryDirectory(dir=directory) as tmp:
         stage = Path(tmp)

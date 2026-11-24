@@ -9,6 +9,7 @@ Search local sequence collections, build alignments, match homologs and measure 
 | Three local search databases, seeds or profiles, references and pairing evidence | `triplet run --config …` | Search hits, retrieved sequences, alignments, a pairing audit and the complete analysis |
 | Three unpaired alignments and genome or orthology evidence | `triplet prepare` | Matched observations, QC and inputs for `analyze` |
 | Three aligned components and a curated match table | `triplet analyze` | Ranked scores, benchmarks, a site network and an offline HTML report |
+| A PDB/mmCIF structure and three reference sequences, optionally a complete score archive | `triplet structure-map --config … --out …` | Mapped coordinates, complete distance and label tables, structural benchmarks and viewer selections. [Structure mapping guide](docs/structure-mapping.md) |
 
 ## Install
 

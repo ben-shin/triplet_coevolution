@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "structure": "mixed.cif",
+  "source_kind": "synthetic",
+  "references": {
+    "A": {
+      "fasta": "references.fasta",
+      "id": "enzyme_fragment",
+      "molecule": "protein"
+    },
+    "B": {
+      "fasta": "references.fasta",
+      "id": "partner_fragment",
+      "molecule": "protein"
+    },
+    "C": {
+      "fasta": "references.fasta",
+      "id": "rna_strand",
+      "molecule": "rna"
+    }
+  },
+  "metric": "heavy",
+  "close": 5,
+  "distant": 15,
+  "sensitivity_thresholds": [
+    4,
+    8
+  ],
+  "negative_ratio": 1,
+  "seed": 17,
+  "triples": "candidates.tsv"
+}

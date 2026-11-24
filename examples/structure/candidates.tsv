@@ -1,0 +1,4 @@
+a_reference_id	a_reference_pos	b_reference_id	b_reference_pos	c_reference_id	c_reference_pos	cohort
+enzyme_fragment	1	partner_fragment	1	rna_strand	1	illustration
+enzyme_fragment	2	partner_fragment	2	rna_strand	3	comparison
+enzyme_fragment	2	partner_fragment	3	rna_strand	2	comparison

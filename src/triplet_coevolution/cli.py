@@ -31,6 +31,7 @@ from triplet_coevolution.reporting.html import write_report
 from triplet_coevolution.reporting.network import ranked_tables, write_network
 from triplet_coevolution.score_commands import benchmark, export, report
 from triplet_coevolution.score_views import save_analysis_store
+from triplet_coevolution.structure.workflow import structure_map
 from triplet_coevolution.workflow import prepare, run
 
 app = typer.Typer(
@@ -46,6 +47,8 @@ app.command("evidence")(evidence)
 app.command("benchmark")(benchmark)
 app.command("export")(export)
 app.command("report")(report)
+app.command("structure-map")(structure_map)
+app.command("contacts")(structure_map)
 
 
 def _show_version(value: bool) -> None:
@@ -99,7 +102,7 @@ def _stage_run(out: Path) -> Iterator[Path]:
             yield stage
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
-                marker_names = ("workflow_summary.json", SUMMARY_NAME, "view_summary.json",
+                marker_names = ("structure_summary.json", "workflow_summary.json", SUMMARY_NAME, "view_summary.json",
                                 "benchmark.json", "score_manifest.json")
                 final_manifest = next((stage / name for name in marker_names if (stage / name).exists()), None)
                 artifacts = sorted(
