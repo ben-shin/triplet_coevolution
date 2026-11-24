@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "title": "GatABC legacy score-table regression",
+  "provenance": {
+    "source": "Owner-supplied implementation specification, section 2, November 24, 2026",
+    "audited_package_version": "1.0.0",
+    "audited_git_commit": "c511759810d6a1659ea60b3022913dd646ea5093",
+    "legacy_values": "Section 2 values are historical audit targets. The later owner-supplied compact bundle contains original labeled scores for both families on every benchmark label.",
+    "local_check": "November 24, 2026: verified the original prepared inputs, mapped labels and 2G5H coordinates against supplied checksums. The compact archive SHA-256 is 07513cb9c81e303fb25899fe8d9439f3bdc98e1708fb4a0ff47ccc11ccf09b8e. All 27 members listed internally matched.",
+    "local_legacy_replay": "original_compact_metrics_passed; frozen_refit_one_metric_disagreed",
+    "private_analysis_executed_here": true,
+    "hash_coverage": "SHA-256 values below come from the original and compact bundle checksum lists. Byte availability and independent numerical checks are detailed in gatabc-regression.md. Six original full score-file digests are known; their bytes were absent in the compact archive."
+  },
+  "paths": {
+    "layout": "All paths are relative to an operator-supplied GatABC data root.",
+    "evidence": "metadata/evidence.tsv",
+    "labels": "metadata/contacts_2G5H.tsv",
+    "prepared_directory": "results/gatabc_prepared_20261123T182555Z",
+    "prepared_files": ["A.fasta", "B.fasta", "C.fasta", "matches.tsv", "matching_qc.json"],
+    "full_score_directory": "results/gatabc_full_benchmark_20261124T091044Z",
+    "full_score_files": ["mi_ab.tsv", "mi_ac.tsv", "mi_bc.tsv", "dca_ab.tsv", "dca_ac.tsv", "dca_bc.tsv"],
+    "pair_run_files": ["contacts.json", "run_summary.json"],
+    "model_table": "results/gatabc_models_20261124T084702Z/threebody_abc.tsv",
+    "null_tables": ["results/gatabc_nulls_20261124T084702Z/permutation_threebody.tsv", "results/gatabc_nulls_20261124T084702Z/permutation_mi.tsv"]
+  },
+  "supplied_sha256": {
+    "configs/prepare_gatabc.json": "2c4ba471157afb28670493bcb14045543c2a0a0c416d4810d60dc856f9e82a5f",
+    "inputs/paired/gata.fasta": "27c7dc9badb616f69cca27765a5008019b3fec66514953bccde75dd4da4bab90",
+    "inputs/paired/gatb.fasta": "aea9e5ae00639c22896deb457da03954486032a70742a4c38a79a72b5461ab7e",
+    "inputs/paired/gatc.fasta": "41f0912107994c7f7fd3d767c0a50d437981d07f74dc8ff37f815e3245ac1420",
+    "metadata/contacts_2G5H.tsv": "01041f913c8aa13e7be79b02b7f97d84d52d9ec10d1841fa0b16e1b2d688137b",
+    "metadata/evidence.tsv": "efc154f1b7017e1e16f58a92eda4ccd9d969c01b79fd2894cba11d3edc38e820",
+    "metadata/structures/2G5H.cif": "4bda3244cd2927691d66827c5f551ed81f6e24fcb49e6fafc0e16711fb7723c8",
+    "metadata/uniprot_proteomes_cache.tsv": "d902c1ffc6d8d22e71f4ba0a6d3df5eaaa882233ad7308f354e600b7c4594240",
+    "results/gatabc_full_benchmark_20261124T091044Z/contacts.json": "e5c7613ec13aaf0abc0948ccba464831c50f7be3b7a0c323f44986285fe66dc4",
+    "results/gatabc_full_benchmark_20261124T091044Z/dca_ab.tsv": "e78375b13eadd6dc216219949afd48f3d36ff91bfe10d24abc097799a4911d9c",
+    "results/gatabc_full_benchmark_20261124T091044Z/dca_ac.tsv": "44d9506a509402278fcdd70e858a39bfd02ffa963606e80c8ae36798f08261f1",
+    "results/gatabc_full_benchmark_20261124T091044Z/dca_bc.tsv": "f77226bc0b9a2c1d671e0e9304b607fae9a92ce880ef87d3efd3af30ff1954cf",
+    "results/gatabc_full_benchmark_20261124T091044Z/mi_ab.tsv": "15457f15d50550636008c11ea03f07278e74b9ce03c6a60e7d8b1e01d8cd5f69",
+    "results/gatabc_full_benchmark_20261124T091044Z/mi_ac.tsv": "91c530b951e2d8f23ac1f3a62d15e4c3d82aa459cd9efedbfba20c0fecf436e0",
+    "results/gatabc_full_benchmark_20261124T091044Z/mi_bc.tsv": "c62ba45ac2bd9a5c58ca43caf6beda6e27a734efafca8a889cec4ac718afb331",
+    "results/gatabc_full_benchmark_20261124T091044Z/run_summary.json": "319704cc2ec802e619c6a5d1d064de31f11266c9b10b439815253f54cbaf2974",
+    "results/gatabc_prepared_20261123T182555Z/A.fasta": "b22f380e837d348b058d6a820d8edfc82f37152ee09b9651a8bb38d5c0969a20",
+    "results/gatabc_prepared_20261123T182555Z/B.fasta": "ee7c9ebafaabcdb0931578b44c7b7d24bae9e17a165a8c44e3ac661e69df5fcc",
+    "results/gatabc_prepared_20261123T182555Z/C.fasta": "d27823e12835136a38d2d83d44f2bf67a9b87c5ba03724bac2871b4d641b391d",
+    "results/gatabc_prepared_20261123T182555Z/analyze_args.json": "654199fd2559f46da09898bb379946a8c3554507d0e8e5e5741fda98df2f8f05",
+    "results/gatabc_prepared_20261123T182555Z/matches.tsv": "d42760bac709aa3d38bd7883f01e550a1f6d34110a2dfad0fb40315d79f400f4",
+    "results/gatabc_prepared_20261123T182555Z/matching_qc.json": "61fb4c22bfd32c9f227f1c28af3927aea9c89c904d53591cb8eaf023a8822db9",
+    "results/gatabc_prepared_20261123T182555Z/workflow_summary.json": "326f3994ec183049e45daf506e0cf9d7852753fd431b75e6d930db56ed0c6493",
+    "results/gatabc_models_20261124T084702Z/threebody_abc.tsv": "5dab17a54b469109c9dfe448668681bd75c0eb9e152e89f8e271f8ddbc024938",
+    "results/gatabc_nulls_20261124T084702Z/permutation_threebody.tsv": "ce5b32a8cb3d0d53c4697cadebed9f595561940390726b4f75e264ff43b62bc5",
+    "results/gatabc_nulls_20261124T084702Z/permutation_mi.tsv": "422ee1d50f127a2e8657d0c88372c45b3e89e15d13f334c70c003e70bd56cfdd",
+    "regression/labeled_pairwise_scores.tsv": "864d440abc1a2ca711d05fb8c529b8d3a776dfe87d5fb7d3662bd0f37a2baed8",
+    "regression/metrics.json": "fadeb605f2223d754652ec79b05b61fcb223406225df45da22e07d03c41c0f0e",
+    "regression/permutation_mi_subset.tsv": "1ec3ccbaac6d791248bb31889f86d44989b4d55025b353ea7ef640a1d815f2b8",
+    "regression/top100_pairwise.tsv": "7771ede05e9657a87829607466df480b36b56e8088c73a4471344b4951c38e7d"
+  },
+  "references": {"A": "sp|Q97SE6|GATA_STRPN", "B": "sp|Q97SE7|GATB_STRPN", "C": "sp|Q97SE5|GATC_STRPN"},
+  "cohort": {
+    "jackhmmer_hit_ids": {"A": 189055, "B": 88258, "C": 39163},
+    "unique_accession_ids": 306534,
+    "annotation_history": "UniProt asynchronous submission initially returned HTTP 500. The audit reports successful curl submissions and completion after retries and caching.",
+    "evidence_rows": 2664,
+    "complete_candidate_proteome_groups": 888,
+    "excluded_missing_or_multiple_groups": 12335,
+    "matching_method": "single_hit_shared_proteome",
+    "role_limitation": "Shared proteome membership alone does not establish orthology.",
+    "matched_observations": 888,
+    "records_per_prepared_alignment_including_reference": 889,
+    "original_columns": {"A": 3699, "B": 2653, "C": 361},
+    "retained_columns": {"A": 480, "B": 474, "C": 94},
+    "reference_eligible_columns": {"A": 477, "B": 474, "C": 94},
+    "total_retained_columns": 1048,
+    "total_reference_eligible_columns": 1045,
+    "retained_cartesian_triples": 21386880,
+    "reference_eligible_triples": 21253212,
+    "reference_eligible_pairs": {"AB": 226098, "AC": 44838, "BC": 44556},
+    "total_reference_eligible_pairs": 315492,
+    "effective_observations": 505.49112803812943,
+    "effective_observations_per_retained_column_approx": 0.482,
+    "dca_features": 13564,
+    "observations_times_dca_features": 12044832
+  },
+  "settings": {
+    "identity": 0.8, "min_overlap": 0.5, "min_coverage": 0.5, "max_gaps_or_missing": 0.5,
+    "min_valid": 100, "require_reference": true, "max_pairs_per_interface": 250000,
+    "mi_export_sort": "mi_apc", "dca_enabled": true, "ridge": 0.1,
+    "legacy_dca_export_sort": "dca_frobenius",
+    "full_pair_run_threebody": false, "full_pair_run_permutations": 0
+  },
+  "score_definitions": {
+    "mi_bits": "Weighted mutual information on canonical observations at both sites, in bits.",
+    "mi_apc": "MI in bits after average-product correction within the interface.",
+    "dca_frobenius": "Observed-state, zero-sum-gauge Frobenius norm of the cross-site block in the ridge inverse-covariance model.",
+    "dca_apc": "The DCA Frobenius norm after average-product correction within the interface.",
+    "legacy_order": "The v1 DCA table exported rows in raw Frobenius order. Compute ranks of each score on its full eligible interface before comparing coordinates."
+  },
+  "labels": {
+    "source": "Homologous PDB 2G5H, mapped to the Streptococcus pneumoniae reference sequences",
+    "positive_definition": "Minimum inter-residue heavy-atom distance at most 8 angstroms",
+    "negative_definition": "Sampled distant controls with C-alpha distance at least 25 angstroms",
+    "counts": {
+      "AB": {"positive": 409, "negative": 409},
+      "AC": {"positive": 610, "negative": 610},
+      "BC": {"positive": 421, "negative": 421}
+    },
+    "total": 2880, "positive": 1440, "negative": 1440, "labels_with_finite_scores": 2880,
+    "limitations": "The sample has 50% positives and deliberately distant controls. AP describes this sample. Unknown labels must stay unknown. Assembly, chain mapping and distances require independent structural validation."
+  },
+  "metric_definitions": {
+    "interface_and_pooled_values": ["auroc", "average_precision"],
+    "auroc": "Tied scores receive half credit.",
+    "average_precision": "Noninterpolated, grouped by tied score and weighted by increments in recall.",
+    "pooled": "All labels in the three interfaces, compared across their score distributions.",
+    "macro_auroc": "Unweighted mean of the three interface AUROCs, using unrounded values.",
+    "absolute_tolerances": {"interface": 0.0000500001, "pooled_or_macro": 0.0000000500001},
+    "rounding": "Tolerances allow half a unit in the last digit printed in the audit."
+  },
+  "metrics": {
+    "mi_bits": {"AB": [0.3367, 0.4262], "AC": [0.6006, 0.6282], "BC": [0.5323, 0.5897], "pooled": [0.5030047, 0.5630838], "macro_auroc": 0.4898582},
+    "mi_apc": {"AB": [0.5448, 0.5693], "AC": [0.6513, 0.6813], "BC": [0.5845, 0.6352], "pooled": [0.6015818, 0.6366720], "macro_auroc": 0.5935678},
+    "dca_frobenius": {"AB": [0.2807, 0.3818], "AC": [0.4871, 0.5119], "BC": [0.4749, 0.5086], "pooled": [0.4318924, 0.4809008], "macro_auroc": 0.4142414},
+    "dca_apc": {"AB": [0.6296, 0.6238], "AC": [0.6567, 0.6836], "BC": [0.6087, 0.6456], "pooled": [0.6343996, 0.6553872], "macro_auroc": 0.6316783}
+  },
+  "top_k_confirmed_positive_labels": {
+    "interpretation": "Observed positive counts provide a lower bound on contacts. Geometry for unlabeled pairs was not supplied.",
+    "mi_apc": {"10": {"AB": 1, "AC": 3, "BC": 2}},
+    "dca_apc": {
+      "10": {"AB": 2, "AC": 9, "BC": 7},
+      "25": {"AB": 3, "AC": 15, "BC": 15},
+      "50": {"AB": 5, "AC": 18, "BC": 21},
+      "100": {"AB": 5, "AC": 24, "BC": 25}
+    }
+  },
+  "rank_definition": "Descending competition rank within an interface: one plus the number of eligible pairs with a strictly larger score. Positions below are 1-based reference coordinates.",
+  "reference_pairs": [
+    {"pair": "AC", "positions": [301, 40], "symbols": ["K", "L"], "label": "positive", "ranks": {"mi_apc": 50, "dca_frobenius": 1, "dca_apc": 1}},
+    {"pair": "AC", "positions": [381, 52], "symbols": ["T", "T"], "label": "positive", "ranks": {"mi_apc": 1, "dca_frobenius": 2, "dca_apc": 2}},
+    {"pair": "BC", "positions": [53, 64], "symbols": ["K", "P"], "label": "positive", "ranks": {"mi_apc": 3, "dca_frobenius": 1, "dca_apc": 1}},
+    {"pair": "AB", "positions": [175, 276], "symbols": ["G", "D"], "label": "unlabeled", "ranks": {"mi_apc": 1, "dca_frobenius": 111581, "dca_apc": 42}},
+    {"pair": "AC", "positions": [175, 15], "symbols": ["G", "S"], "label": "unlabeled", "ranks": {"mi_apc": 3, "dca_frobenius": 38641, "dca_apc": 1318}},
+    {"pair": "BC", "positions": [276, 15], "symbols": ["D", "S"], "label": "unlabeled", "ranks": {"mi_apc": 1, "dca_frobenius": 33895, "dca_apc": 264}},
+    {"pair": "AB", "positions": [321, 276], "symbols": ["R", "D"], "label": "positive", "ranks": {"mi_apc": 2}}
+  ],
+  "separate_threebody_and_permutation_runs": {
+    "draws_per_test": 19,
+    "mi": {"finite": 315492, "at_p_0_05": 84526, "minimum_bh_q": 0.1866242, "at_q_le_0_05": 0},
+    "local_triple": {"finite": 1000, "at_p_0_05": 70, "at_p_1": 603, "minimum_bh_q": 0.7142857, "at_q_le_0_05": 0},
+    "observed_scores_joined_by_original_column_triple": {"matched_equal": 1000, "total": 1000},
+    "possible_cells": {"median": 2016, "min": 20, "max": 7600},
+    "occupied_fraction": {"median": 0.0682476, "min": 0.02105, "max": 0.75},
+    "valid_weight": {"median": 473.1453, "min": 203.2446, "max": 503.4911},
+    "pseudocount_per_cell": 0.5, "median_prior_mass": 1008, "largest_prior_mass": 3800,
+    "highest_ranked_triples": [
+      {"reference_positions_ABC": [150, 139, 94], "rms_nats": 0.462361, "coinformation_bits": -0.000327, "valid_rows": 806, "valid_weight": 436.3238, "occupied_cells": 20, "possible_cells": 80, "p": 0.05, "bh_q": 0.7142857},
+      {"reference_positions_ABC": [225, 93, 77], "rms_nats": 0.399974, "coinformation_bits": -0.037728, "occupied_cells": 57, "possible_cells": 288, "p": 0.05, "bh_q": 0.7142857}
+    ],
+    "positive_edges_among_1000_sampled_triples": {"0": 980, "1": 19, "2": 1, "3": 0},
+    "top_100_with_one_positive_edge": 4,
+    "proposed_reference_triple_175_276_15_sampled": false,
+    "limitations": "Matching observed values verifies candidate identity. Nineteen draws give coarse p-values and cannot establish absence of signal. Counts of supplied positive edges do not measure complete geometry or irreducible dependence. The audit did not report GatABC DCA/APC permutation calibration or a global triple fit."
+  },
+  "offline_replay": {
+    "command": "python benchmarks/validate_gatabc.py PATH_TO_GATABC_ROOT",
+    "optional_test": "Set TRIPLET_GATABC_LEGACY_ROOT to the same directory to enable the optional test.",
+    "compact_command": "python benchmarks/validate_gatabc.py PATH_TO_COMPACT_ROOT --compact",
+    "refit_check": "python benchmarks/validate_gatabc.py PATH_TO_COMPACT_ROOT --recomputed-scores DIRECTORY_WITH_SIX_FULL_TSVS",
+    "inputs": "Exact original label file and either all six complete v1 reference-coordinate score tables or the original compact labeled score file.",
+    "checks": "Label hash, class counts, score-table completeness and identity, finite scores on labeled pairs, four AUROC/AP metrics per interface and pooled, macro AUROC and the listed coordinate ranks and labels.",
+    "scope": "Score-table replay does not refit the MSA, verify PDB geometry, or rerun the separate triple and permutation analyses. The compact mode verifies the labeled score set and its AUROC/AP. Only full-table mode checks completeness and all coordinate ranks."
+  }
+}
