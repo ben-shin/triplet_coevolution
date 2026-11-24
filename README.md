@@ -27,6 +27,16 @@ triplet --version
 
 For PNG heatmaps, install `python -m pip install ".[plots]"`. For development, use `python -m pip install -e ".[dev,plots]"`, then run `python -m pytest -q` and `ruff check src tests`. The examples use local files. Additional search programs have their own installation requirements, listed in the [workflow guide](docs/workflows.md).
 
+## Try an offline mixed-alphabet project
+
+```shell
+triplet init --template protein-rna-rna --out demo
+triplet score --config demo/analysis.json --out demo/scored
+triplet report --run demo/scored --out demo/offline
+```
+
+Open `demo/offline/report.html` to inspect the 16 synthetic observations, signed score maps, benchmark curves, reference coordinates and tables. Run `triplet run --input demo/input --offline --out demo/matched` to exercise matching as well. Five molecule combinations, JSON inheritance, Python API examples and migration from 1.0.0 are documented in the [project and API guide](docs/python-api.md). The [implementation report](docs/completion-audit.md) records measured capabilities, unfinished scientific validation and release dependencies.
+
 ## Run the complete workflow
 
 If you already have three Stockholm families, put each file in a separate folder under [input](input/README.md). Name the folders after your proteins or nucleic acids and run the following command from the repository root.
