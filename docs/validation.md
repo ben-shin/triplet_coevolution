@@ -94,3 +94,27 @@ The v1-compatible native command used the settings in the regression guide with 
 **Installed gate at `7937d0b83dca71e8267c977c9adb188cd6e44722`.** The trusted Git archive recorded that exact revision in the wheel and sdist. The full Windows 3.13.15 suite passed 775 tests and skipped 11 in 37.83 s. Windows 3.11.16 with the baseline dependency floors passed 775 and skipped 11 in 41.07 s, with the same 13 Matplotlib/pyparsing warnings. WSL Linux 3.14.4 passed 785 and skipped one in 32.81 s. The common skip requires the bytes of the six original full score tables. The ten additional native Windows skips require the external binaries exercised on Linux. Both available private-fixture tests ran. Both distributions included the score guide, legacy data manifest and replay guide. A clean base-only sdist install ran the bundled workflow and standalone benchmark with identical benchmark bytes.
 
 The installed wheel reran both GatABC modes with `--all-pairs`, the same prepared inputs and the same single-thread settings. The legacy run took 22.67 s and reached 440,885,248 bytes peak RSS. The new default took 15.94 s and reached 440,299,520 bytes. These are single observations at one setting. The exact legacy cell comparison passed again, and the new default’s standalone `benchmark.json` was byte-identical to the native benchmark. Full native arrays and result tables stayed in private scratch storage.
+
+## Phase 2 structural mapping
+
+The parser commit is `1a73211`, and the independent full-polymer mapping and distance reconstruction is `e13113b`. The tested native CLI, matching rules, benchmarks, viewer export and example are at `774c177e9b87429172cb9db25c59473dd563e165`. This development wheel reported the same archive revision from outside the source checkout. Windows CPython 3.13.15 ran the full installed suite with the private compact bundle and local score refit enabled. It passed 799 tests and skipped 11 in 43.01 s. Ten skips require external search programs evaluated on Linux during Phase 1. The remaining case requires the six original full ranked score tables. Ruff passed across src, tests and benchmarks. The rebuilt sdist and wheel both contained the mixed structure example, guide and private-data verifier. [Source mapping and replay](structure-mapping.md)
+
+The fixture and regression checks cover both coordinate formats, noncommuting assembly transformations, repeated copies, author versus label chain and residue IDs, insertion codes, missing polymer coordinates, alternate locations, modified nucleotides, explicit anchors and geometry calculated independently from atoms. The mixed example’s coordinate file had SHA-256 `170e1b311ce0f320b4e2d7af6ca87e31de333dda7234cbd1298aaa98f4450693` in the tested Windows wheel. With a 5 Å heavy-atom cutoff its first synthetic triple has edge lengths 4, 3 and 5 Å. The example has 12 observable AB, 16 AC and 12 BC pairs. The installed `contacts` alias reproduced the example from its packaged files. Real PyMOL 3.2.0a0.post5859 loaded its three transformed copy files; all 15 selected pairs matched the author chains, numbers, insertion codes and expected minimum distances within 0.00001 Å. The ChimeraX script passed an API-level test on the same emitted atom identities. A native ChimeraX executable was unavailable.
+
+The installed native command ran the owner’s 2G5H file, three hashed reference FASTAs and Phase 1 default score store with heavy-atom distance ≤8 Å for positives, Cα distance ≥25 Å for distant controls and sensitivity cutoffs 4, 5 and 8 Å. It wrote 331,040 pair records. Of 277,991 measurable pairs, 1,454 were positive. The common finite four-score set had 270,651 measurable pairs and 1,428 positives. The table uses that full common label set; its average precision has a different baseline from the original balanced control study.
+
+| Phase 1 default score | Pooled AUROC | Pooled AP |
+| --- | ---: | ---: |
+| MI | 0.530677 | 0.008728 |
+| MI/APC | 0.606999 | 0.014287 |
+| Raw DCA | 0.485561 | 0.012077 |
+| DCA/APC | 0.635551 | 0.032277 |
+
+This single installed Windows run took 34.01 s with one OpenBLAS thread and wrote the full distance/label export, both common-score benchmark files and viewer files. The complete distance table had SHA-256 `0be293f136f5c124af49d286f35a78fc843c60f240a1ce58106445676cf27643` and the all-measurable label file had SHA-256 `c8abfe80e742b07dec0b9fe0641c3d8e0e83cd491cdd4478d9d5325b47aa88a8`. Every output hash in the manifest was rechecked. An independent calculation on the scalar legacy score archive gives closely related MI metrics and the same DCA metrics. Of the 2,880 original labels, 2,830 agreed, 13 original positives were measurable above 8 Å, and 37 labels had insufficient deposited coordinates or unambiguous correspondence. The residue-level evidence and measured discrepancies are recorded [in the GatABC reconstruction](../benchmarks/gatabc-structure.md).
+
+Reproduce the synthetic check from the repository root with the following commands. The private reconstruction instructions identify files by checksum and only read local supplied data.
+
+```shell
+python -m pytest -q tests/test_structure_parser.py tests/test_structure_mapping_distances.py tests/test_structure_command.py
+triplet structure-map --config examples/structure/config.json --out results/structure-example
+```
