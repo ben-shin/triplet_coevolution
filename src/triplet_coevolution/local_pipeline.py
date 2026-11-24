@@ -25,43 +25,12 @@ from triplet_coevolution.operations import (
     read_json,
     stage,
 )
+from triplet_coevolution.policy_inputs import dependencies
 from triplet_coevolution.provenance import package_code_digest, software_identity
 from triplet_coevolution.search.local_tools import tools_for
 from triplet_coevolution.workflow import _inputs
 
 STAGES = ("prepare", "plan", "score", "select", "calibrate", "benchmark", "report")
-
-
-def dependencies(path, seen=None):
-    """Bind local files named by a policy, including secondary JSON policies and tabular data."""
-    path = Path(path).resolve()
-    seen = set() if seen is None else seen
-    if path in seen:
-        return {}
-    seen.add(path)
-    result = {str(path): file_id(path)}
-    if path.suffix.lower() != ".json":
-        return result
-
-    def visit(value, field):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                visit(item, key)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item, field)
-        elif isinstance(value, str) and value and field not in ("checkpoint", "cache_dir"):
-            try:
-                nested = (path.parent / value).resolve()
-                exists = nested.is_file()
-            except (OSError, ValueError):
-                # Identifiers, labels and description strings need not be valid path names.
-                return
-            if exists:
-                result.update(dependencies(nested, seen))
-
-    visit(read_json(path), None)
-    return result
 
 
 def tokens(settings):
@@ -351,9 +320,9 @@ def run_pipeline(
             def score_identity():
                 journal.check_output(preparation)
                 deps = {}
-                for opt in settings.values():
+                for kind, opt in settings.items():
                     if isinstance(opt, Path):
-                        deps.update(dependencies(opt))
+                        deps.update(dependencies(kind, opt))
                 return {
                     "prepared": prep_receipt,
                     "settings": {
@@ -414,8 +383,10 @@ def run_pipeline(
                 from triplet_coevolution.validation.null_policy import NullPolicy
 
                 policy = NullPolicy.from_config(null_config)
-                null_inputs = lambda: downstream({"policy": dependencies(null_config)})
-                checkpoint = policy.checkpoint or (root / "checkpoints" / digest(null_inputs()))
+                null_inputs = lambda: downstream(
+                    {"policy": dependencies("null_policy", null_config)}
+                )
+                checkpoint = (policy.checkpoint or root / "checkpoints") / digest(null_inputs())
                 primary = (
                     checkpoint / "scenario-01"
                     if policy.tree and policy.tree.alternatives

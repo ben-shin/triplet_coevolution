@@ -8,8 +8,9 @@ from typer.testing import CliRunner
 
 from triplet_coevolution.cli import app
 from triplet_coevolution.diagnostics import doctor_report, validate_config
-from triplet_coevolution.local_pipeline import dependencies, run_pipeline
+from triplet_coevolution.local_pipeline import run_pipeline
 from triplet_coevolution.operations import Journal, lease, read_json, stage
+from triplet_coevolution.policy_inputs import dependencies
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 run = CliRunner()
@@ -89,15 +90,92 @@ def test_failed_or_dirty_attempt_not_reused(tmp_path):
         pass
 
 
-def test_nested_policy_fingerprints_bind_edited_secondary_file(tmp_path):
-    second = tmp_path / "tree.nwk"
-    second.write_text("(a:1,b:2);")
-    policy = tmp_path / "config.json"
-    policy.write_text(json.dumps({"tree": {"path": "tree.nwk"}}))
-    before = dependencies(policy)
-    second.write_text("(a:2,b:1);")
-    assert dependencies(policy)[str(second)] != before[str(second)]
-    assert dependencies(policy)[str(policy)] == before[str(policy)]
+@pytest.mark.parametrize("suffix", ["", ".policy", ".csv", ".json"])
+def test_semantic_policy_fingerprints_ignore_nondependency_strings(tmp_path, suffix):
+    tree = tmp_path / "tree.rows"
+    tree.write_text("(a:1,b:2);")
+    tips = tmp_path / "tip-map"
+    tips.touch()
+    alt = tmp_path / "alt.data"
+    alt.touch()
+    frequencies = tmp_path / "freq.tab"
+    frequencies.write_text("{}")
+    source = tmp_path / "description"
+    source.touch()
+    policy = tmp_path / ("null" + suffix)
+    policy.write_text(
+        json.dumps(
+            {
+                "null": "independent_site_tree",
+                "statistics": ["mi_bits"],
+                "draws": 3,
+                "tree": {
+                    "newick": tree.name,
+                    "tip_map": tips.name,
+                    "origin": "synthetic",
+                    "source": source.name,
+                    "frequency_policy": "supplied",
+                    "frequencies": frequencies.name,
+                    "alternatives": [
+                        {
+                            "label": "other",
+                            "source": "independent",
+                            "components": {"A": alt.name, "B": alt.name, "C": alt.name},
+                        }
+                    ],
+                },
+            }
+        )
+    )
+    before = dependencies("null_policy", policy)
+    assert set(before) == {str(x) for x in (policy, tree, tips, alt, frequencies)}
+    source.write_text("changed")
+    assert dependencies("null_policy", policy) == before
+    tree.write_text("(a:2,b:1);")
+    assert dependencies("null_policy", policy)[str(tree)] != before[str(tree)]
+    tips.unlink()
+    with pytest.raises(FileNotFoundError):
+        dependencies("null_policy", policy)
+
+
+def test_nested_clade_screen_and_panel_file_inventory(tmp_path):
+    from triplet_coevolution.config import ANALYSIS_TYPES
+    from triplet_coevolution.policy_inputs import SELF_CONTAINED
+
+    assert {k for k, v in ANALYSIS_TYPES.items() if v is Path} == SELF_CONTAINED | {
+        "null_policy",
+        "stability_policy",
+        "conditional_policy",
+    }
+    panel = tmp_path / "panel.json"
+    panel.write_text("component\\toriginal_column\\n")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    split = sub / "split"
+    split.touch()
+    clade = sub / "group.csv"
+    clade.write_text(json.dumps({"split_manifest": split.name}))
+    nested = tmp_path / "nested"
+    nested.write_text(json.dumps({"clades": "sub/group.csv", "panel_file": panel.name}))
+    assert set(dependencies("conditional_policy", nested)) == {
+        str(p) for p in (nested, panel, clade, split)
+    }
+    clade.write_text(
+        json.dumps(
+            {
+                "clade_tree": {"newick": "tree", "tip_map": "tips"},
+                "tree_depth": 1,
+                "source": "local",
+            }
+        )
+    )
+    for name in ("tree", "tips"):
+        (sub / name).touch()
+    assert set(dependencies("conditional_policy", nested)) == {
+        str(p) for p in (nested, panel, clade, sub / "tree", sub / "tips")
+    }
+    # A .json extension alone does not transform a biological data table into a policy.
+    assert set(dependencies("site_panel", panel)) == {str(panel)}
 
 
 def test_stage_reuse_and_independent_invalidation(tmp_path):
@@ -256,3 +334,44 @@ def test_legacy_declines_different_factorization(tmp_path):
     path.write_text('{"backend":"mf","factor_solver":"cholesky"}')
     res = check([*opts, "--dca", "--dca-policy", path, "--legacy", "--out", tmp_path / "fit"], 1)
     assert "legacy" in res.output.lower() and not (tmp_path / "fit").exists()
+
+
+def test_renamed_tree_policy_reuses_only_matching_law(tmp_path):
+    source = EXAMPLES / "workflow" / "prepare.json"
+    policy = tmp_path / "phylogenetic.policy"
+    tree = tmp_path / "branches"
+    policy.write_text(
+        json.dumps(
+            {
+                "null": "independent_site_tree",
+                "statistics": ["mi_bits"],
+                "draws": 19,
+                "seed": 8,
+                "tree": {
+                    "newick": tree.name,
+                    "source": "fixture",
+                    "origin": "synthetic",
+                    "frequency_policy": "uniform",
+                },
+            }
+        )
+    )
+    work = tmp_path / "workspace"
+
+    def run_at(root, length):
+        tree.write_text("(" + ",".join(f"obs{i:02}:{length}" for i in range(1, 9)) + ");")
+        result = run_pipeline(source, root, until="calibrate", null_config=policy)
+        row = result["stages"][-1]
+        calibration = read_json(Path(row["output"]) / "calibration.json")
+        return (
+            row["action"],
+            calibration["runner"]["count_sha256"],
+            (Path(row["output"]) / "calibration.tsv").read_bytes(),
+        )
+
+    old = run_at(work, 0.01)
+    assert run_at(work, 0.01) == ("reused", *old[1:])
+    changed = run_at(work, 3.51)
+    assert changed[0] == "executed" and changed[1] != old[1]
+    assert run_at(tmp_path / "fresh", 3.51) == changed
+    assert len(list((work / "checkpoints").glob("*/null.sqlite3"))) == 2

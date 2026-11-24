@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from triplet_coevolution.diagnostics import THREAD_VARS
 from triplet_coevolution.family_config import family_config
-from triplet_coevolution.local_pipeline import _run, dependencies
+from triplet_coevolution.local_pipeline import _run
 from triplet_coevolution.operations import (
     Journal,
     file_id,
@@ -16,6 +16,7 @@ from triplet_coevolution.operations import (
     read_json,
     stage,
 )
+from triplet_coevolution.policy_inputs import dependencies
 from triplet_coevolution.provenance import package_code_digest, software_identity
 
 
@@ -151,9 +152,9 @@ def run_folder_stages(directory, work_dir, online=None, cache_dir=None, plots=No
                     raise ValueError("installed source changed during pipeline")
                 current, _, _ = family_config(None, folder, uniprot=online, automatic=True)
                 cfg_files = {}
-                for v in current["analysis"].values():
+                for kind, v in current["analysis"].items():
                     if isinstance(v, Path):
-                        cfg_files.update(dependencies(v))
+                        cfg_files.update(dependencies(kind, v))
                 return {
                     "preparation": prep_hash,
                     "runtime": runtime,
