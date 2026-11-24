@@ -182,3 +182,27 @@ At commit `7788a64fdbc9f9668546410dda29e54f829e8da1`, an archived checkout built
 **Independent numerical checks.** Four mixed fixtures compared fixed-alphabet, gap-aware ridge fits to explicit weighted covariance inversion with shrinkage across both sample-size regimes and both conditioning designs. Seven independently regenerated permutations matched every raw/APC exceedance in 24 PLM hypotheses; silently substituting mean field would change five. An independent enumeration of the nested holdout outcomes gave loss .7324203650 versus .5162258932 over five common observations with weight 29. Editing every held-out observation left both training-model digests unchanged. A PLM fit capped at one iteration correctly withheld its scores. Prespecified independent synthetic cohorts and a separate external protein-only solver comparison quantify size, power, errors and limits. [PLM benchmark](plm.md) · [Held-out model benchmark](../benchmarks/nested-models.md)
 
 **Private development check.** The native wheel repeated the two bounded experiments on hash-verified GatABC data. All historical-label metric and coverage records for all fourteen declared configurations on each panel exactly reproduced the initial local trial. Only the retrospectively class-ascertained 24-site panel enabled a two-class comparison (11 positives, six negatives). This development complex contributes no independent evidence of cross-system predictive accuracy. [Reference positions, settings, timings and measured limits](../benchmarks/gatabc-conditioning.md)
+
+## Phase 8 local discovery, genomic evidence and bounded ingestion
+
+At `3dcd6bb732b447936e38488c5f2140b2cea6ed40`, an archived checkout produced an sdist and wheel, and the installed package passed `pip check`. Windows Python 3.13.15 ran **1,009 installed tests with 14 skips in 71.42 s**. The skips covered twelve external-tool cases, optional SciPy and the absent six original full GatABC score TSVs. Under WSL, an isolated install of the same wheel reported the same build SHA and passed all 32 indexed workflow, profile search, new discovery and genome annotation tests in 29.72 s. These used real HMMER 3.4, Infernal 1.1.5 and BLAST+ 2.16.0+ against synthetic inputs. The HMMER case compared raw schema 1 and schema 2 over the same repeated protein. The older workflow accepted the best source interval and recorded both, and the newer one retained two exact domain IDs while the ambiguous bare ID supplied no match. The complete installed Windows suite was run with the available compact, refitted and weighting GatABC fixtures.
+
+```console
+python -m pytest -q -rs
+python -m pytest -q tests/test_indexed_workflows.py tests/test_profile_search.py tests/test_search_discovery.py tests/test_genomic_evidence.py
+python benchmarks/search_discovery.py
+python benchmarks/native_ingestion.py --gzip --rows 32768 --block-width 1024 --repeat 3
+```
+
+**Historical match replay.** The installed command `triplet prepare --config configs/prepare_gatabc.json --out prepared-replay` used the owner's original matched evidence, three aligned FASTA inputs and no external lookups. It reproduced 888 groups in 1.964 s. Each generated FASTA had 889 rows including its reference. The SHA-256 digests of A, B, C and matches were identical to the supplied originals.
+
+| File | SHA-256 |
+|---|---|
+| A.fasta | `b22f380e837d348b058d6a820d8edfc82f37152ee09b9651a8bb38d5c0969a20` |
+| B.fasta | `ee7c9ebafaabcdb0931578b44c7b7d24bae9e17a165a8c44e3ac661e69df5fcc` |
+| C.fasta | `d27823e12835136a38d2d83d44f2bf67a9b87c5ba03724bac2871b4d641b391d` |
+| matches.tsv | `d42760bac709aa3d38bd7883f01e550a1f6d34110a2dfad0fb40315d79f400f4` |
+
+The historical three-family input of approximately 2.3 GB was unavailable. On a 32,768 × 4,096 gzip Stockholm fixture, identical selected rows required a median 46.32 MiB peak RSS and 3.256 s through the index, compared with 483.46 MiB and 10.308 s through eager loading. Three repeats on the same host measured the complete index, validation and extraction. The earlier 512-row measurement records the fixed cost of indexing. The adapter benchmark records raw and cached timings, candidate counts and insertion/strand outcomes. Genome annotation controls cover two independent systems in one assembly, conflicting loci, incomplete features, named windows and pinned-cache recovery after a simulated interruption. [Ingestion measurements](native-ingestion.md) · [Adapter settings and timings](../benchmarks/search-discovery.md) · [Evidence denominators and privacy](genomic-evidence.md)
+
+**Artifacts.** Wheel SHA-256 `0bad8805f916d0ed3a92fc9a3ea9b1b1160e24d52acff6655e585416064963e0`; sdist SHA-256 `e78097fcb7823997daa15f85c1059bf912da50a0a3cf3ffd09b95fbdb141ce2d`. Both included the compact experimental benchmark tables and the exact prospective registrations. The following sequence-only experimental cohort commit `e0ad9ae` is independent of the software gate. It contains 461 polymerase genomes from 40 phyla and 163 mixed ribosome genomes from 29 phyla. That screen used a fixed protocol, retained raw-data source hashes, and had no contact or score outcome. [Cohort scope and verification](independent-cohort-staging.md)
