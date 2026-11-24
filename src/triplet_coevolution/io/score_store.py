@@ -43,6 +43,33 @@ class ExportedCoordinates(ReferenceCoordinates):
     source_current_columns: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
+        if not any(
+            (
+                self.original_columns,
+                self.reference_positions,
+                self.symbols,
+                self.source_current_columns,
+            )
+        ):
+            # A v1 ranked view can legitimately have no reported site in this component.
+            # The source summary still identifies the reference and records retained columns.
+            if (
+                self.component not in tuple("ABC")
+                or not isinstance(self.reference_id, str)
+                or not self.reference_id
+                or type(self.start) is not int
+                or self.start < 1
+                or self.strand not in ("+", "-")
+            ):
+                raise ValueError("invalid metadata for an empty exported coordinate axis")
+            for key in (
+                "original_columns",
+                "reference_positions",
+                "symbols",
+                "source_current_columns",
+            ):
+                object.__setattr__(self, key, ())
+            return
         super().__post_init__()
         cols = tuple(self.source_current_columns)
         if (
@@ -75,7 +102,10 @@ class ScoreStore:
         keep = self.n_valid[pair] >= self.min_valid
         if self.require_reference or reference_only:
             a, b = (self.maps["ABC".index(c)] for c in pair)
-            x, y = (np.array([p is not None for p in axis.reference_positions]) for axis in (a, b))
+            x, y = (
+                np.array([p is not None for p in axis.reference_positions], dtype=bool)
+                for axis in (a, b)
+            )
             keep &= x[:, None] & y[None, :]
         return keep
 
@@ -152,6 +182,7 @@ def _validate(store):
         raise ValueError("missing MI gap policy")
     if prov.get("apc_universe", "retained") not in {"retained", "reference"}:
         raise ValueError("unknown APC universe")
+    sparse_legacy = prov.get("origin") == "legacy_uncapped_or_complete_views"
     for name, blocks in {
         **store.scores,
         "n_valid": store.n_valid,
@@ -164,16 +195,22 @@ def _validate(store):
             if not isinstance(block, np.ndarray) or block.shape != shape:
                 raise ValueError(f"invalid matrix shape for {name} {pair}")
             if name == "n_valid":
-                if block.dtype.kind not in "iu" or np.any(block < 0) or np.any(block > n):
+                if (
+                    block.dtype.kind not in "iu"
+                    or np.any(block < (-1 if sparse_legacy else 0))
+                    or np.any(block > n)
+                ):
                     raise ValueError(f"invalid pair counts for {pair}")
             elif block.dtype.kind != "f" or np.isinf(block).any():
                 raise ValueError(f"invalid numeric matrix for {name} {pair}")
             elif name == "valid_weight" and (
-                not np.isfinite(block).all()
+                not np.array_equal(np.isnan(block), store.n_valid[pair] < 0)
                 or np.any(block < 0)
                 or np.any(block > weight + 1e-8 * max(1, weight))
             ):
                 raise ValueError(f"invalid pair support weights for {pair}")
+            elif name in store.scores and np.any((store.n_valid[pair] < 0) & np.isfinite(block)):
+                raise ValueError(f"finite {name} on a legacy cell of unknown support in {pair}")
 
 
 def from_results(

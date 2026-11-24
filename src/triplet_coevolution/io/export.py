@@ -97,10 +97,13 @@ def _check_block(
   ):
     raise ValueError("mi scores must be finite or nan; raw mi cant be negative")
 
-  if block.n_valid.dtype.kind not in "iu" or np.any(block.n_valid < 0):
-    raise ValueError("n_valid must contain nonnegative ints")
+  missing_support = block.n_valid == -1
+  if (block.n_valid.dtype.kind not in "iu" or np.any(block.n_valid < -1)
+      or np.any(missing_support & (np.isfinite(block.mi_bits) | np.isfinite(block.mi_apc)))):
+    raise ValueError("n_valid requires nonnegative counts or unknown support on omitted legacy cells")
 
-  if not np.isfinite(block.valid_weight).all() or np.any(block.valid_weight < 0):
+  if (not np.array_equal(np.isnan(block.valid_weight), missing_support)
+      or np.isinf(block.valid_weight).any() or np.any(block.valid_weight < 0)):
     raise ValueError("valid_weight must be finite and nonnegative")
 
 

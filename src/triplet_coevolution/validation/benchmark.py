@@ -174,13 +174,8 @@ def _distance_summary(values):
     }
 
 
-def _top(order, truth, distances, ks, eligible_total, positive_total, labeled_total):
+def _top(order, truth, distances, ks, positive_total, prevalence):
     result = {}
-    prevalence = (
-        positive_total / eligible_total
-        if eligible_total and labeled_total == eligible_total
-        else None
-    )
     for name, k in ks.items():
         idx = order[:k]
         hit = int(np.sum(truth[idx] == 1))
@@ -262,6 +257,8 @@ def benchmark_scores(
             reason = "non_test_split"
         elif label.contact is None:
             reason = label.status
+        elif store.n_valid[pair].ravel()[i] < 0:
+            reason = "unreported_legacy_support"
         elif not axes[pair][0][i]:
             reason = "insufficient_pair_support"
         elif not comparison[pair][i]:
@@ -281,6 +278,11 @@ def benchmark_scores(
         all_clusters = []
         for pair in PAIRS:
             keep, truth, dist, positions, length = axes[pair]
+            maps = [store.maps["ABC".index(c)] for c in pair]
+            numbered = [
+                np.array([v is not None for v in m.reference_positions], dtype=bool) for m in maps
+            ]
+            mapped = numbered[0][:, None] & numbered[1][None, :]
             values = blocks[pair].ravel()
             finite = keep & np.isfinite(values)
             mask = comparison[pair]
@@ -294,9 +296,22 @@ def benchmark_scores(
             ks.update({"L": length, "L/2": max(1, length // 2), "L/5": max(1, length // 5)})
             labeled = int(np.count_nonzero(keep & (truth >= 0)))
             positives = int(np.count_nonzero(keep & (truth == 1)))
+            source_axes = store.provenance.get("source_retained_columns", {})
+            known_universe = not np.any(mapped & (store.n_valid[pair] < 0)) and all(
+                m.component not in source_axes or len(source_axes[m.component]) == m.n_sites
+                for m in maps
+            )
+            prevalence = (
+                positives / int(keep.sum())
+                if known_universe and keep.any() and labeled == keep.sum()
+                else None
+            )
             result.update(
                 coverage={
                     "eligible_pairs": int(keep.sum()),
+                    "support_and_axes_complete": known_universe,
+                    "mapped_reference_pairs": int(mapped.sum()),
+                    "unreported_support": int(np.count_nonzero(mapped & (store.n_valid[pair] < 0))),
                     "finite": len(idx),
                     "unscored_eligible": int(keep.sum()) - len(idx),
                     "labeled_eligible": labeled,
@@ -304,12 +319,10 @@ def benchmark_scores(
                     "labeled_unscored": int(np.sum(keep & ~finite & (truth >= 0))),
                     "common_labeled": int(mask.sum()),
                     "unlabeled_eligible": int(keep.sum()) - labeled,
-                    "eligible_prevalence": positives / int(keep.sum())
-                    if keep.any() and labeled == keep.sum()
-                    else None,
+                    "eligible_prevalence": prevalence,
                     "observed_labeled_prevalence": positives / labeled if labeled else None,
                 },
-                top_k=_top(order, truth, dist, ks, int(keep.sum()), positives, labeled),
+                top_k=_top(order, truth, dist, ks, positives, prevalence),
                 distance=_distance_summary(dist[finite]),
                 uncertainty=_intervals(truth[mask], values[mask], clusters, bootstrap, seed),
             )
@@ -332,13 +345,19 @@ def benchmark_scores(
         order = idx[np.argsort(-vals[idx], kind="stable")]
         labeled = int(np.sum(keep & (y >= 0)))
         positives = int(np.sum(keep & (y == 1)))
-        pooled["top_k"] = _top(
-            order, y, ds, {str(k): k for k in top_k}, int(keep.sum()), positives, labeled
+        known_universe = all(v["coverage"]["support_and_axes_complete"] for v in scope.values())
+        prevalence = (
+            positives / int(keep.sum())
+            if known_universe and keep.any() and labeled == keep.sum()
+            else None
         )
+        pooled["top_k"] = _top(order, y, ds, {str(k): k for k in top_k}, positives, prevalence)
         pooled["coverage"] = {
             k: sum(scope[p]["coverage"][k] for p in PAIRS)
             for k in (
                 "eligible_pairs",
+                "mapped_reference_pairs",
+                "unreported_support",
                 "finite",
                 "unscored_eligible",
                 "labeled_eligible",
@@ -349,9 +368,8 @@ def benchmark_scores(
             )
         }
         pooled["coverage"].update(
-            eligible_prevalence=positives / int(keep.sum())
-            if keep.any() and labeled == keep.sum()
-            else None,
+            eligible_prevalence=prevalence,
+            support_and_axes_complete=known_universe,
             observed_labeled_prevalence=positives / labeled if labeled else None,
         )
         pooled["uncertainty"] = _intervals(
@@ -368,10 +386,13 @@ def benchmark_scores(
         "statistics": stats,
         "label_sha256": digest,
         "label_records": len(labels),
+        "source_universe": store.provenance.get(
+            "universe", "Complete retained model axes and pair support."
+        ),
         "excluded_labels": excluded,
         "eligibility": "Numbered reference-coordinate pairs meeting minimum pair support. Classification metrics use the common finite labeled set; top-K uses every finite eligible score for each method.",
         "tie_policy": "AUROC gives half credit, AP groups equal score thresholds. Top-K breaks ties by AB/AC/BC then original alignment coordinates.",
-        "length_definition": "L is the smaller number of retained numbered sites of either component. Fractional L cutoffs round down with a minimum of one.",
+        "length_definition": "L is the smaller number of represented numbered sites of either component. Unmapped legacy columns do not contribute to L. Fractional L cutoffs round down with a minimum of one.",
         "macro_definition": "Unweighted mean over interfaces with a defined metric; each metric includes the number of contributing interfaces.",
         "degenerate_metrics": "AUROC requires both classes. AP requires at least one positive and equals one on an all-positive labeled set.",
         "calibration": {
@@ -410,6 +431,7 @@ def write_merged_scores(path: Path, store: ScoreStore, labels_path: Path) -> Non
         "y_original_col",
         "y_reference_pos",
         "eligible",
+        "support_status",
         "n_valid",
         "valid_weight",
         "contact",
@@ -460,9 +482,18 @@ def write_merged_scores(path: Path, store: ScoreStore, labels_path: Path) -> Non
                             "y_current_col": cols[b.component][j] if b.component in cols else j + 1,
                             "y_original_col": b.original_columns[j] + 1,
                             "y_reference_pos": y,
-                            "eligible": int(keep[index]),
-                            "n_valid": store.n_valid[pair][i, j],
-                            "valid_weight": store.valid_weight[pair][i, j],
+                            "eligible": int(keep[index])
+                            if store.n_valid[pair][i, j] >= 0
+                            else None,
+                            "support_status": "known"
+                            if store.n_valid[pair][i, j] >= 0
+                            else "unreported_legacy_support",
+                            "n_valid": store.n_valid[pair][i, j]
+                            if store.n_valid[pair][i, j] >= 0
+                            else None,
+                            "valid_weight": store.valid_weight[pair][i, j]
+                            if store.n_valid[pair][i, j] >= 0
+                            else None,
                             "contact": label.contact if label else None,
                             "label_status": label.status if label else "unlabeled",
                             "label_source": label.source if label else "",

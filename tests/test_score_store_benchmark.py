@@ -187,7 +187,8 @@ def test_labels_cannot_substitute_references_or_duplicate_coordinates(tmp_path):
         benchmark_scores(store, p)
 
 
-def test_legacy_csv_rectangle_rejects_truncation_and_retains_source_columns(tmp_path):
+@pytest.fixture()
+def legacy_rectangle(tmp_path):
     store = fixture_store()
     axes = {
         "A": [(1, 2, 10), (3, 9, 20)],
@@ -201,6 +202,7 @@ def test_legacy_csv_rectangle_rejects_truncation_and_retains_source_columns(tmp_
         with path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
             header = [
+                "rank",
                 "pair",
                 *(
                     f"{side}_{key}"
@@ -220,9 +222,12 @@ def test_legacy_csv_rectangle_rejects_truncation_and_retains_source_columns(tmp_
                 "valid_weight",
             ]
             writer.writerow(header)
-            for (i, o, x), (j, u, y) in ((l, r) for l in axes[a] for r in axes[b]):
+            for rank, ((i, o, x), (j, u, y)) in enumerate(
+                ((l, r) for l in axes[a] for r in axes[b]), start=1
+            ):
                 writer.writerow(
                     [
+                        rank,
                         pair,
                         a,
                         "ref" + a,
@@ -260,10 +265,18 @@ def test_legacy_csv_rectangle_rejects_truncation_and_retains_source_columns(tmp_
         "matched_observations": 4,
         "effective_depth": 3.0,
         "inputs": store.provenance["inputs"],
-        "settings": {"max_pairs": 10, "min_valid": 2, "require_reference": True},
+        "settings": {"max_pairs": 10, "min_valid": 2, "require_reference": True, "score": "mi_apc"},
     }
     p = tmp_path / "run_summary.json"
     p.write_text(json.dumps(summary))
+    return summary
+
+
+def test_legacy_csv_rectangle_rejects_truncation_and_retains_source_columns(
+    tmp_path, legacy_rectangle
+):
+    p = tmp_path / "run_summary.json"
+    summary = legacy_rectangle
     imported = import_legacy_scores(tmp_path)
     assert imported.maps[0].site(1).current_column == 3
     artifact = write_score_store(tmp_path / "converted", imported)
@@ -276,6 +289,108 @@ def test_legacy_csv_rectangle_rejects_truncation_and_retains_source_columns(tmp_
     summary["outputs"]["tables"]["AC"]["rows"] = 3
     p.write_text(json.dumps(summary))
     with pytest.raises(ValueError, match="truncated"):
+        import_legacy_scores(tmp_path)
+
+
+def test_sparse_uncapped_legacy_support_and_ranked_views(tmp_path, legacy_rectangle):
+    summary = legacy_rectangle
+    data = tmp_path / "mi_ab.csv"
+    data.write_text("\n".join(data.read_text().splitlines()[:-1]) + "\n")
+    summary["outputs"]["tables"]["AB"]["rows"] = 3
+    (tmp_path / "run_summary.json").write_text(json.dumps(summary))
+    store = import_legacy_scores(tmp_path)
+    restored = load_score_store(write_score_store(tmp_path / "artifact", store))
+    assert restored.n_valid["AB"][1, 1] == -1
+    assert np.isnan(restored.valid_weight["AB"][1, 1]) and np.isnan(
+        restored.scores["mi_bits"]["AB"][1, 1]
+    )
+    from triplet_coevolution.score_views import write_ranked_views
+
+    destination = tmp_path / "export"
+    destination.mkdir()
+    tables = write_ranked_views(destination, restored)
+    assert [t.rows for t in tables] == [3, 4, 4]
+    path = labels(tmp_path / "contact.tsv", [("AB", 20, 20, 1), ("AB", 10, 20, 0)])
+    result = benchmark_scores(restored, path)
+    coverage = result["statistics"]["mi_bits"]["interfaces"]["AB"]["coverage"]
+    assert (
+        coverage["eligible_pairs"],
+        coverage["mapped_reference_pairs"],
+        coverage["unreported_support"],
+    ) == (3, 4, 1)
+    assert not coverage["support_and_axes_complete"] and coverage["eligible_prevalence"] is None
+    assert result["excluded_labels"][0]["reason"] == "unreported_legacy_support"
+    write_merged_scores(tmp_path / "merged.tsv", restored, path)
+    with (tmp_path / "merged.tsv").open() as stream:
+        missing = next(
+            r
+            for r in csv.DictReader(stream, delimiter="\t")
+            if r["support_status"] == "unreported_legacy_support"
+        )
+    assert (
+        missing["n_valid"]
+        == missing["valid_weight"]
+        == missing["eligible"]
+        == missing["mi_bits"]
+        == ""
+    )
+    assert missing["x_current_col"] == "3" and missing["x_original_col"] == "9"
+
+
+def test_unreported_legacy_axis_keeps_original_source_metadata(tmp_path, legacy_rectangle):
+    for p in ("AB", "AC"):
+        table = tmp_path / f"mi_{p.lower()}.csv"
+        table.write_text(table.read_text().splitlines()[0] + "\n")
+        legacy_rectangle["outputs"]["tables"][p]["rows"] = 0
+    (tmp_path / "run_summary.json").write_text(json.dumps(legacy_rectangle))
+    store = load_score_store(write_score_store(tmp_path / "store", import_legacy_scores(tmp_path)))
+    assert store.maps[0].reference_id == "refA" and store.maps[0].reference_positions == ()
+    assert store.provenance["source_retained_columns"]["A"] == [2, 7, 9]
+    assert store.scores["mi_bits"]["AB"].shape == (0, 2)
+    r = benchmark_scores(store, labels(tmp_path / "labels.tsv", [("AB", 20, 10, 1)]))
+    assert r["excluded_labels"] == [
+        {"pair": "AB", "positions": [20, 10], "reason": "outside_retained_reference_axes"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "duplicate_header",
+        "missing_header",
+        "duplicate_coordinate",
+        "nonfinite_ranked",
+        "bad_rank",
+        "drop_row",
+        "bad_declared_digest",
+    ],
+)
+def test_legacy_rejects_unreliable_view(tmp_path, legacy_rectangle, corruption):
+    table = tmp_path / "mi_ab.csv"
+    with table.open(newline="") as f:
+        rows = list(csv.reader(f))
+    header = rows[0]
+    if corruption == "duplicate_header":
+        header.append("mi_bits")
+        for row in rows[1:]:
+            row.append("999")
+    elif corruption == "missing_header":
+        header[header.index("mi_bits")] = "alternate"
+    elif corruption == "duplicate_coordinate":
+        rows[-1] = rows[-2].copy()
+        rows[-1][0] = "4"
+    elif corruption == "nonfinite_ranked":
+        rows[1][header.index("mi_apc")] = "nan"
+    elif corruption == "bad_rank":
+        rows[1][0] = "2"
+    elif corruption == "drop_row":
+        rows.pop()
+    else:
+        legacy_rectangle["outputs"]["tables"]["AB"]["sha256"] = "0" * 64
+        (tmp_path / "run_summary.json").write_text(json.dumps(legacy_rectangle))
+    with table.open("w", newline="") as f:
+        csv.writer(f).writerows(rows)
+    with pytest.raises(ValueError):
         import_legacy_scores(tmp_path)
 
 
