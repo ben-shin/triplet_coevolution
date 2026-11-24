@@ -745,3 +745,29 @@ def test_project_qc_replays_from_published_analysis_and_reports_blockers(tmp_pat
     assert result.exit_code == 0, (result.output, result.exception)
     for name in ("qc_rows.tsv", "weights.tsv", "site_weight_support.tsv", "dca_ab.tsv"):
         assert (repeat / name).read_bytes() == (previous / name).read_bytes()
+
+
+def test_folder_workflow_keeps_pair_results_and_explains_local_model_limit(tmp_path):
+    base = tmp_path / "input"
+    _folders(base)
+    (base / "local.json").write_text('{"max_cells":1}')
+    (base / "project.json").write_text(
+        json.dumps(
+            {
+                "analysis": {
+                    "threebody": True,
+                    "threebody_model": "maxent",
+                    "local_policy": "local.json",
+                    "max_triplets": 8,
+                    "permutations": 2,
+                }
+            }
+        )
+    )
+    out = tmp_path / "result"
+    response = _run(base, out, "--offline")
+    assert response.exit_code == 3, (response.output, response.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "partial" and summary["local_fit_status"] == {"resource_limit": 8}
+    assert (out / "analysis/permutation_mi.tsv").is_file()
+    assert (out / "analysis/local_model_fits.tsv").is_file()

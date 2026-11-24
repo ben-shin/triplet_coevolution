@@ -3,6 +3,7 @@
 import csv
 import math
 import os
+from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
 
@@ -108,6 +109,9 @@ def estimate_model(
     seed,
     identity_threshold,
     min_overlap,
+    candidate_mode=None,
+    candidate_policy=None,
+    local_policy=None,
 ):
     from triplet_coevolution.inference.weights import weighting_preflight
 
@@ -172,15 +176,109 @@ def estimate_model(
         raise ValueError("total supplied weight exceeds finite floating-point range")
     if supplied and sum(supplied) < min_valid_weight:
         warnings.append("Total supplied positive weight falls below the minimum valid weight.")
-    verified = None
-    if triplet_candidates is not None:
-        from triplet_coevolution.inference.advanced import _candidates
-        from triplet_coevolution.inference.scores import coordinate_axes
+    from triplet_coevolution.inference.candidates import select_candidates
+    from triplet_coevolution.inference.local_options import (
+        SCREENED,
+        LocalSettings,
+        candidate_options,
+    )
+    from triplet_coevolution.inference.scores import coordinate_axes
 
-        verified, _ = _candidates(
-            triplet_candidates, maps, coordinate_axes(maps, require_reference), max_triplets, seed
+    mode, screen = candidate_options(
+        candidate_mode, candidate_policy, triplet_candidates, max_triplets
+    )
+    if screen.get("pair_statistic", "mi_bits").startswith("dca") and not dca:
+        raise ValueError("DCA candidate screening requires --dca")
+    ids = {m.observation_id for m in msa.matches}
+    if screen.get("training_ids") and not set(screen["training_ids"]) < ids:
+        raise ValueError(
+            "candidate training_ids must be a proper subset of the retained observations"
         )
-        candidates = len(verified)
+    axes = coordinate_axes(maps, require_reference)
+    verified = None
+    if threebody and mode == "exhaustive" and candidates < eligible_triples:
+        blockers.append(
+            {
+                "method": "threebody",
+                "reason": f"exhaustive universe of {eligible_triples} exceeds max_triplets={max_triplets}",
+            }
+        )
+    if threebody and mode not in {"prior", "explicit"} and candidates > 100_000:
+        blockers.append(
+            {
+                "method": "threebody",
+                "reason": "ABC candidate count exceeds 100000. Reduce --max-triplets or the site panel.",
+            }
+        )
+    if (
+        threebody
+        and mode in SCREENED
+        and min(eligible_triples, screen.get("screen_budget", 100_000)) > 1_000_000
+    ):
+        blockers.append(
+            {
+                "method": "threebody",
+                "reason": "ABC screen exceeds 1000000 probes. Reduce screen_budget.",
+            }
+        )
+    if triplet_candidates is not None:
+        file_mode = "prior" if mode == "hybrid" else mode
+        file_opts = {key: screen[key] for key in ("prior_source", "file_origin") if key in screen}
+        file_set = select_candidates(
+            maps,
+            axes,
+            mode=file_mode,
+            maximum=screen.get("screen_budget", 100_000) if mode == "hybrid" else max_triplets,
+            candidate_file=triplet_candidates,
+            seed=seed,
+            **file_opts,
+        )
+        if mode != "hybrid":
+            verified = file_set.triples
+            candidates = len(verified)
+    local_details = None
+    screened_probes = (
+        min(eligible_triples, screen.get("screen_budget", 100_000))
+        if threebody and mode in SCREENED
+        else 0
+    )
+    settings_count = 1
+    maxent_cells = 0
+    if threebody_model == "maxent":
+        local = LocalSettings.parse(local_policy)
+        support = local.support(msa)
+        zero_bins = local.zero_bins(maps, support, axes)
+        if verified is not None and zero_bins.keys() - set(verified):
+            raise ValueError("structural zero specified for an unselected ABC candidate")
+        # A screen does not run during preflight. Its sites therefore use an upper bound.
+        if verified is not None:
+            maxent_cells = max((math.prod(support.shape_for(t)) for t in verified), default=0)
+        else:
+            maxent_cells = math.prod(
+                max((max(sites[j]) + 1 for j in axis), default=0)
+                for sites, axis in zip(support.maps, axes, strict=True)
+            )
+        settings_count = len(local.options)
+        local_details = {
+            "prior_settings": settings_count,
+            "max_cells_per_candidate": maxent_cells,
+            "cell_limit": local.options[0].max_cells,
+            "ipf_iterations_per_setting_limit": local.options[0].max_iterations,
+            "declared_structural_zeros": len(local.structural_zeros),
+            "include_gaps": local.include_gaps,
+            "frozen_state_mapping": "train_pooled" if local.min_state_count else "declared",
+            "settings": [asdict(setting) for setting in local.options],
+            "diagnostic_rows_upper": settings_count * candidates,
+            "ipf_cell_updates_upper": 3
+            * min(maxent_cells, local.options[0].max_cells)
+            * local.options[0].max_iterations
+            * settings_count
+            * candidates,
+        }
+        if maxent_cells > local.options[0].max_cells:
+            warnings.append(
+                "Candidates exceeding the configured max_cells will have resource_limit status and undefined connected information."
+            )
     choice = None
     dca_bytes = 0
     gram_flops = 0
@@ -203,6 +301,14 @@ def estimate_model(
     peak_dca = dca_bytes + 2 * array_bytes if dca else 0
     max_states = math.prod(max(1, int(states[c].max())) for c in "ABC")
     peak_triples = (candidates * 256 + max_states * 96) if threebody else 0
+    if threebody:
+        peak_triples += screened_probes * 80
+        if local_details:
+            peak_triples += (
+                min(maxent_cells, local.options[0].max_cells) * 128
+                + min(candidates, 32) * settings_count * 1024
+                + candidates * 1024
+            )
     global_details = None
     if threebody and threebody_model == "global":
         cn = int(complete.sum())
@@ -218,7 +324,11 @@ def estimate_model(
 
         axes = coordinate_axes(maps, require_reference)
         is_exact = True
-        if not triplet_candidates and candidates == eligible_triples:
+        if (
+            mode in {"uniform", "exhaustive"}
+            and not triplet_candidates
+            and candidates == eligible_triples
+        ):
             # Product of the sums equals the sum of all triple tensor sizes.
             active = [
                 [int(cm[c][j]) for j in axis if cm[c][j] > 1]
@@ -226,8 +336,10 @@ def estimate_model(
             ]
             kterms = math.prod(len(items) for items in active)
             triple_params = math.prod(sum(items) for items in active)
-        elif verified is not None or candidates <= min(
-            50_000, (memory_budget_bytes or 16_000_000) // 256
+        elif (
+            verified is not None
+            or mode in {"uniform", "exhaustive"}
+            and candidates <= min(50_000, (memory_budget_bytes or 16_000_000) // 256)
         ):
             chosen = (
                 verified if verified is not None else sample_candidates(axes, max_triplets, seed)[0]
@@ -273,7 +385,12 @@ def estimate_model(
             else:
                 blockers.append({"method": "threebody", "reason": reason})
         peak_triples += 48 * (lower + triple_params) + 8 * global_details["lookup_upper_bound"]
-    nulls = (pairs * (2 if dca else 1) + candidates) if permutations else 0
+    withhold = (
+        threebody_model == "maxent"
+        or mode in SCREENED
+        or screen.get("file_origin") in {"same_data", "training"}
+    )
+    nulls = (pairs * (2 if dca else 1) + (0 if withhold else candidates)) if permutations else 0
     peak_null = (
         (2 * array_bytes if dca else array_bytes)
         + 96 * nulls
@@ -315,6 +432,17 @@ def estimate_model(
         "reference_triplets": math.prod(numbered.values()),
         "candidate_universe": eligible_triples,
         "candidate_count": candidates,
+        "candidate_mode": mode if threebody else None,
+        "candidate_count_scope": "upper_bound_until_screen"
+        if threebody and mode in SCREENED
+        else "requested_coordinates",
+        "candidate_screen_probes_upper": screened_probes,
+        "local_hierarchy": local_details,
+        "triple_null": "withheld"
+        if withhold
+        else "whole_component_shuffle"
+        if threebody and permutations
+        else None,
         "count_threshold": min_valid,
         "weight_threshold": min_valid_weight,
         "variable_sites": variable,
@@ -347,7 +475,12 @@ def estimate_model(
             "ranked_pair_rows_upper": ranked_rows * (1 + int(dca)),
             "tested_triple_support_rows": candidates,
             "score_text_bytes_approx": 256
-            * (ranked_rows * (1 + int(dca)) + nulls + 2 * candidates),
+            * (
+                ranked_rows * (1 + int(dca))
+                + nulls
+                + 2 * candidates
+                + (settings_count * candidates if local_details else 0)
+            ),
             "scope": "Approximate numeric workspace and text size. Excludes interpreter, file parsing, BLAS-internal memory, benchmarks and HTML; no wall-clock or process-RSS guarantee.",
         },
     }

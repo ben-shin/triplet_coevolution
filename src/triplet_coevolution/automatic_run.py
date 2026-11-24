@@ -136,6 +136,10 @@ def _score(stage, out, summary, kwargs, settings, plan):
                         "pseudocount",
                         "max_triplets",
                         "triplet_candidates",
+                        "candidate_mode",
+                        "candidate_policy",
+                        "local_policy",
+                        "threebody_score",
                     )
                 )
                 for key in dependent:
@@ -185,6 +189,22 @@ def _score(stage, out, summary, kwargs, settings, plan):
     if analysis.get("qc_diagnostics", {}).get("excluded_observations"):
         summary["scored_scope"]["selection"] = "configured_qc"
         summary["scored_scope"]["qc_summary"] = "analysis/qc_summary.json"
+    advanced = analysis.get("advanced", {})
+    if advanced.get("local_fit"):
+        statuses = advanced["local_fit"]["primary_fit_status"]
+        summary["local_fit_status"] = statuses
+        solved = advanced["candidates"]["finite"]
+        failure_count = sum(
+            n
+            for name, n in statuses.items()
+            if name
+            not in {"ok", "no_data", "insufficient_rows", "insufficient_weight", "prior_only_axis"}
+        )
+        if not solved or failure_count:
+            plan["skipped"]["local_candidate_fits"] = (
+                f"{solved} finite primary scores from {advanced['candidates']['tested']} requested candidates. "
+                f"Fit status counts: {statuses}. See analysis/{advanced['local_fit']['diagnostic_table']}."
+            )
     if not any(t["rows"] for t in analysis["outputs"]["tables"].values()):
         _terminal(summary, "insufficient_data", "No pair passed the configured output thresholds.")
     elif "observation_qc" in summary:

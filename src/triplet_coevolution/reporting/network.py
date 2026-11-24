@@ -37,10 +37,18 @@ def ranked_tables(summary: dict) -> list[RankedTable]:
                 ("x", "y"), meta["rows"]
             ))
     if meta := advanced.get("threebody_abc"):
-        tables.append(RankedTable(
-            "ABC", "Three-body Potts", meta["path"], selection.get("threebody") or "threebody_rms",
-            ("a", "b", "c"), meta["rows"]
-        ))
+        tables.append(
+            RankedTable(
+                "ABC",
+                "Local maximum entropy"
+                if summary.get("advanced", {}).get("local_fit")
+                else "Three-body Potts",
+                meta["path"],
+                selection.get("threebody") or "threebody_rms",
+                ("a", "b", "c"),
+                meta["rows"],
+            )
+        )
     return tables
 
 

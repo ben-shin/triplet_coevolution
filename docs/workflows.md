@@ -31,6 +31,8 @@ The configuration is UTF-8 JSON. Relative file paths are resolved from the direc
 
 All components require `molecule` (`protein`, `dna` or `rna`) and `reference_id`. Optional `reference_start` sets the positive 1-based number of the first occupied reference site. Prepare takes an `alignment` in aligned FASTA or Stockholm format. Run takes a `database` in ungapped FASTA format and a single-record ungapped `reference` FASTA with the configured ID. FASTA IDs are unique within each file and end at the first whitespace. Reference IDs may be outside the evidence table.
 
+For a local M1/M2/M3 comparison set `analysis.threebody` to true and `analysis.threebody_model` to `maxent`. Both `candidate_policy` and `local_policy` accept project-relative JSON paths. [Local model and candidate settings](local-analysis.md)
+
 ## Matching and QC
 
 Create one row per proposed component member from your genome or orthology evidence. Each group ID identifies one prospective observation across all three components. For example, a genome ID is sufficient when you expect a single member per family in each genome. If several independent systems share a genome, distinguish their evidence groups explicitly.

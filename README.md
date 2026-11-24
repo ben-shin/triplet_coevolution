@@ -75,6 +75,8 @@ Use the same arguments with `triplet plan` and a fresh `--out` directory to insp
 
 To add mean-field DCA, a three-body fit and stratification-free permutation tests, append `--dca --threebody --permutations 19 --seed 7` to the example and use `--out results/mixed-models`. Nineteen draws are enough to exercise the workflow, with limited p-value resolution. To generate PNG heatmaps, add `--plots` after installing the plotting extra.
 
+For a three-site comparison with the best-fitting pairwise maximum-entropy distribution, use `triplet local`. The [local analysis guide](docs/local-analysis.md) runs the mixed example across several prior strengths, explains connected information and shows how to declare and audit candidates.
+
 ## Prepare your inputs
 
 Supply one aligned FASTA or one Stockholm alignment per component. Sequences within a component must have equal aligned lengths and unique, case-sensitive IDs. For FASTA, the ID is the first whitespace-delimited token after `>`. Each component defaults to `protein`. Set `--a-type`, `--b-type` or `--c-type` to `protein`, `dna` or `rna` as needed.

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "prior_mode": "total",
+  "prior_mass": 0,
+  "tolerance": 1e-9,
+  "max_iterations": 1000,
+  "sensitivity": [
+    {"prior_mode": "total", "prior_mass": 1},
+    {"prior_mode": "per_cell", "prior_mass": 0.5}
+  ]
+}

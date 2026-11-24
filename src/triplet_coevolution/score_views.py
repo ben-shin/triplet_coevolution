@@ -276,6 +276,11 @@ def regenerate_report(source: Path, directory: Path) -> None:
     paths += [output[k] for k in ("score_manifest", "score_payload", "benchmark") if k in output]
     paths += [output[k] for k in ("weights", "plan", "replay") if k in output]
     paths += list(output.get("diagnostics", {}).values())
+    advanced = summary.get("advanced", {})
+    if advanced.get("candidate_manifest"):
+        paths.append(advanced["candidate_manifest"])
+    if fit := advanced.get("local_fit"):
+        paths.extend([fit["diagnostic_table"], fit["frozen_support"]])
     if any(path not in expected or path == "report.html" for path in paths):
         raise ValueError("report file was not present in the verified native inventory")
     write_report(directory, summary, ranked_tables(summary))

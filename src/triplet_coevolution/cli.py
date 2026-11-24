@@ -10,6 +10,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import wraps
+from inspect import signature
 from pathlib import Path
 from typing import Annotated
 
@@ -256,7 +257,11 @@ def analyze(
         bool, typer.Option("--threebody", help="Estimate a three-site Potts interaction for ABC.")
     ] = False,
     threebody_model: Annotated[
-        str, typer.Option("--threebody-model", help="Three-body fit: local or global.")
+        str,
+        typer.Option(
+            "--threebody-model",
+            help="ABC model: local projected log-linear, maxent hierarchy or global pseudolikelihood.",
+        ),
     ] = "local",
     global_l2: Annotated[
         float,
@@ -271,6 +276,27 @@ def analyze(
     ] = 1000,
     triplet_candidates: Annotated[
         Path | None, typer.Option("--triplet-candidates", help="TSV of candidate ABC site triples.")
+    ] = None,
+    candidate_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--candidate-mode",
+            help="uniform, exhaustive, explicit, prior, triangle, wedge, entropy or hybrid.",
+        ),
+    ] = None,
+    candidate_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--candidate-policy",
+            help="JSON screen budgets, training IDs, quotas or external prior provenance.",
+        ),
+    ] = None,
+    local_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--local-policy",
+            help="JSON maximum-entropy support, total or per-cell prior, sensitivity and IPF controls.",
+        ),
     ] = None,
     permutations: Annotated[
         int,
@@ -320,7 +346,7 @@ def analyze(
         str | None,
         typer.Option(
             "--threebody-score",
-            help="Rank by threebody_rms or signed co_information_bits (lower first).",
+            help="ABC ranking: connected_information_bits (maxent), threebody_rms, or signed co_information_bits.",
         ),
     ] = None,
     apc_universe: Annotated[
@@ -446,7 +472,19 @@ def analyze(
         if threebody_score is not None and not threebody:
             raise ValueError("--threebody-score requires --threebody")
         dca_score = dca_score or ("dca_frobenius" if legacy else "dca_apc")
-        threebody_score = threebody_score or "threebody_rms"
+        if legacy and (
+            threebody_model == "maxent" or candidate_mode or candidate_policy or local_policy
+        ):
+            raise ValueError("--legacy uses the legacy threebody models and candidate modes")
+        threebody_score = threebody_score or (
+            "connected_information_bits" if threebody_model == "maxent" else "threebody_rms"
+        )
+        if threebody_score == "connected_information_bits" and threebody_model != "maxent":
+            raise ValueError("connected_information_bits requires --threebody-model maxent")
+        if (candidate_mode or candidate_policy or local_policy) and not threebody:
+            raise ValueError("ABC selection and model options require --threebody")
+        if local_policy and threebody_model != "maxent":
+            raise ValueError("--local-policy requires --threebody-model maxent")
         apc_universe = apc_universe or "retained"
         if apc_universe not in {"reference", "retained"}:
             raise ValueError("--apc-universe must be retained or reference")
@@ -472,10 +510,10 @@ def analyze(
             raise ValueError("--strata-column requires a positive --permutations value")
         if triplet_candidates is not None and not threebody:
             raise ValueError("--triplet-candidates requires --threebody")
-        if threebody_model not in {"local", "global"}:
-            raise ValueError("--threebody-model must be local or global")
-        if threebody_model == "global" and not threebody:
-            raise ValueError("--threebody-model global requires --threebody")
+        if threebody_model not in {"local", "global", "maxent"}:
+            raise ValueError("--threebody-model must be local, maxent or global")
+        if threebody_model != "local" and not threebody:
+            raise ValueError("--threebody-model requires --threebody")
         for name, value in (
             ("--ridge", ridge),
             ("--global-l2", global_l2),
@@ -510,6 +548,8 @@ def analyze(
             for key, path in zip(("A", "B", "C", "matches"), (a, b, c, matches))
         }
         for key, path in (
+            ("candidate_policy", candidate_policy),
+            ("local_policy", local_policy),
             ("triplet_candidates", triplet_candidates),
             ("contacts", contacts),
             ("site_panel", site_panel),
@@ -634,6 +674,9 @@ def analyze(
             maps,
             dca=dca,
             threebody=threebody,
+            candidate_mode=candidate_mode,
+            candidate_policy=paths.get("candidate_policy"),
+            local_policy=paths.get("local_policy"),
             threebody_model=threebody_model,
             require_reference=require_reference,
             max_triplets=max_triplets,
@@ -786,15 +829,33 @@ def analyze(
                 from triplet_coevolution.inference.advanced import write_advanced_results
 
                 advanced = write_advanced_results(
-                    stage, filtered.msa, maps, weights, dca=dca, threebody=threebody,
-                    ridge=ridge, pseudocount=pseudocount, max_triplets=max_triplets,
-                    threebody_model=threebody_model, global_l2=global_l2,
-                    triplet_candidates=paths.get("triplet_candidates"), permutations=permutations,
-                    seed=seed, strata=strata, contacts=paths.get("contacts") if legacy else None,
-                    mi_result=result, dca_score=dca_score, threebody_score=threebody_score,
-                    apc_universe=apc_universe, score_sink=collect_observed, **table_options,
+                    stage,
+                    filtered.msa,
+                    maps,
+                    weights,
+                    dca=dca,
+                    threebody=threebody,
+                    ridge=ridge,
+                    pseudocount=pseudocount,
+                    max_triplets=max_triplets,
+                    threebody_model=threebody_model,
+                    global_l2=global_l2,
+                    candidate_mode=candidate_mode,
+                    candidate_policy=paths.get("candidate_policy"),
+                    local_policy=paths.get("local_policy"),
+                    triplet_candidates=paths.get("triplet_candidates"),
+                    permutations=permutations,
+                    seed=seed,
+                    strata=strata,
+                    contacts=paths.get("contacts") if legacy else None,
+                    mi_result=result,
+                    dca_score=dca_score,
+                    threebody_score=threebody_score,
+                    apc_universe=apc_universe,
+                    score_sink=collect_observed,
+                    **table_options,
                 )
-                for key in ("triplet_candidates", "contacts"):
+                for key in ("triplet_candidates", "contacts", "local_policy", "candidate_policy"):
                     if key in paths and _file_stamp(paths[key]) != stamps[key]:
                         raise ValueError(f"input changed while reading: {paths[key]}")
             figures = (
@@ -960,6 +1021,32 @@ app.command(
     "plan",
     help="Validate native analysis inputs and inspect QC and allocation estimates without fitting.",
 )(plan)
+
+
+@wraps(analyze)
+def local(*args, **kwargs):
+    """Run the local M1/M2/M3 analysis with native input and QC options."""
+    if kwargs.get("threebody_model", "maxent") != "maxent":
+        typer.echo("error: triplet local requires the maxent model", err=True)
+        raise typer.Exit(1)
+    kwargs.update(threebody=True, threebody_model="maxent")
+    return analyze(*args, **kwargs)
+
+
+# Keep the full native input/QC interface and display the actual model defaults in help.
+_native_parameters = signature(analyze)
+local.__signature__ = _native_parameters.replace(
+    parameters=[
+        parameter.replace(default={"threebody": True, "threebody_model": "maxent"}[name])
+        if name in {"threebody", "threebody_model"}
+        else parameter
+        for name, parameter in _native_parameters.parameters.items()
+    ]
+)
+app.command(
+    "local",
+    help="Compare independent, pairwise maximum-entropy and saturated three-site distributions.",
+)(local)
 
 
 if __name__ == "__main__":

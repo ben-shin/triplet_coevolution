@@ -4,12 +4,23 @@ import csv
 import hashlib
 import json
 from collections.abc import Callable
-from math import prod
 from pathlib import Path
 
 import numpy as np
 
+from triplet_coevolution.inference.candidates import (
+    candidate_id,
+    select_candidates,
+    write_candidate_manifest,
+)
 from triplet_coevolution.inference.global_potts import global_triples
+from triplet_coevolution.inference.local_options import (
+    PAIR_SCREENS,
+    SCREENED,
+    LocalSettings,
+    candidate_options,
+)
+from triplet_coevolution.inference.local_outputs import output_value, write_local_fits
 from triplet_coevolution.inference.mi import MIKernel, TripletMI, check_min_valid_weight, triplet_mi
 from triplet_coevolution.inference.potts import PAIRS, DCABlock, direct_couplings
 from triplet_coevolution.inference.scores import (
@@ -22,7 +33,7 @@ from triplet_coevolution.inference.scores import (
     pair_coverage,
     ranked_indices,
 )
-from triplet_coevolution.inference.threebody import fit_triples, sample_candidates
+from triplet_coevolution.inference.threebody import fit_triples
 from triplet_coevolution.inference.weights import (
     _WeightComparisons,
     rematch_evaluator,
@@ -34,7 +45,7 @@ from triplet_coevolution.validation.structure import contact_metrics, read_conta
 
 SITE_FIELDS = ("component", "reference_id", "col", "original_col", "reference_pos", "symbol")
 PAIR_FIELDS = ["pair", *(f"{prefix}_{key}" for prefix in "xy" for key in SITE_FIELDS)]
-TRIPLE_FIELDS = [f"{prefix}_{key}" for prefix in "abc" for key in SITE_FIELDS]
+TRIPLE_FIELDS = ["candidate_id"] + [f"{prefix}_{key}" for prefix in "abc" for key in SITE_FIELDS]
 NULL_FIELDS = ["statistic", "direction", "score", "permutation_p", "bh_q", "null_draws"]
 
 
@@ -81,38 +92,6 @@ def _identity(path):
         }
 
 
-def _candidates(path, maps, axes, max_triplets, seed):
-    if path is None:
-        return sample_candidates(axes, max_triplets, seed)
-    lookups = [
-        {mapping.original_columns[i] + 1: i for i in indices}
-        for mapping, indices in zip(maps, axes)
-    ]
-    selected = set()
-    fields = [f"{x}_original_col" for x in "abc"]
-    with Path(path).open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t", strict=True)
-        if not reader.fieldnames or sorted(reader.fieldnames) != sorted(fields):
-            raise ValueError("triplet candidate TSV requires " + ", ".join(fields))
-        for row in reader:
-            if None in row or None in row.values():
-                raise ValueError(f"malformed triplet candidate at line {reader.line_num}")
-            try:
-                triple = tuple(lookup[int(row[field])] for field, lookup in zip(fields, lookups))
-            except (KeyError, ValueError) as exc:
-                raise ValueError(
-                    f"candidate line {reader.line_num} refers to an ineligible original column"
-                ) from exc
-            if triple in selected:
-                raise ValueError(f"duplicate candidate at line {reader.line_num}")
-            selected.add(triple)
-            if len(selected) > max_triplets:
-                raise ValueError("explicit candidates exceed max_triplets")
-    if not selected:
-        raise ValueError("triplet candidate table is empty")
-    return sorted(selected), prod(len(axis) for axis in axes)
-
-
 def _table(path, fields, rows, fmt):
     count = 0
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -151,7 +130,10 @@ def write_advanced_results(
     threebody_model="local",
     global_l2=0.1,
     dca_score: str = "dca_apc",
-    threebody_score: str = "threebody_rms",
+    threebody_score: str | None = None,
+    candidate_mode: str | None = None,
+    candidate_policy=None,
+    local_policy=None,
     apc_universe: APCUniverse = "retained",
     score_sink: Callable[[TripletMI, dict[str, DCABlock]], None] | None = None,
 ):
@@ -165,6 +147,21 @@ def write_advanced_results(
     verify_weight_alignment(msa,weights)
     if fmt not in {"csv", "tsv"}:
         raise ValueError("advanced results require CSV or TSV")
+    threebody_score = threebody_score or (
+        "connected_information_bits" if threebody_model == "maxent" else "threebody_rms"
+    )
+    if threebody_score == "connected_information_bits" and threebody_model != "maxent":
+        raise ValueError("connected_information_bits requires the maxent model")
+    if not threebody and any(
+        x is not None for x in (candidate_mode, candidate_policy, local_policy)
+    ):
+        raise ValueError("ABC policies require threebody inference")
+    if local_policy is not None and threebody_model != "maxent":
+        raise ValueError("local_policy requires the maxent model")
+    mode, screen = candidate_options(
+        candidate_mode, candidate_policy, triplet_candidates, max_triplets
+    )
+    local = LocalSettings.parse(local_policy) if threebody_model == "maxent" else None
     specs = {
         "mi": get_score(score, "mi"),
         "dca": get_score(dca_score, "dca"),
@@ -189,10 +186,12 @@ def write_advanced_results(
         raise ValueError("supplied MI and refits require matching min_valid and observation count")
     if triplet_candidates is not None and not threebody:
         raise ValueError("triplet candidates require threebody inference")
-    if threebody_model not in {"local", "global"} or (
-        threebody_model == "global" and not threebody
+    if threebody_model not in {"local", "maxent", "global"} or (
+        threebody_model != "local" and not threebody
     ):
-        raise ValueError("threebody_model must be local or global, and global requires threebody")
+        raise ValueError(
+            "threebody_model must be local, maxent or global, and a selected model requires threebody"
+        )
     if strata is not None and not permutations:
         raise ValueError("strata require permutations")
     if len(maps) != 3 or any(
@@ -210,14 +209,76 @@ def write_advanced_results(
         method: mapped_axes if spec.correction == "APC" and apc_universe == "reference" else axes
         for method, spec in specs.items() if method != "threebody"
     }
-    fixed = []
+    fixed = ()
     eligible = 0
     selection = None
+    proposal = None
+    manifest = None
+    observed_dca_for_screen = None
     if threebody:
-        fixed, eligible = _candidates(triplet_candidates, maps, axes, max_triplets, seed)
-        selection = "exhaustive" if len(fixed) == eligible else "uniform"
-        if triplet_candidates is not None:
-            selection = "file"
+        screen_scores = None
+        if mode in PAIR_SCREENS and screen.get("training_ids") is None:
+            screen_spec = get_score(screen.get("pair_statistic", "mi_bits"))
+            if screen_spec.method == "dca":
+                if not dca:
+                    raise ValueError("DCA candidate screening requires --dca")
+                observed_dca_for_screen = dca_with_apc_policy(
+                    _fit(
+                        "dca",
+                        direct_couplings,
+                        msa,
+                        weights,
+                        ridge=ridge,
+                        min_valid=min_valid,
+                        min_valid_weight=min_valid_weight,
+                    ),
+                    maps,
+                    apc_universe,
+                )
+                screen_scores = {
+                    pair: screen_spec.values(block)
+                    for pair, block in observed_dca_for_screen.items()
+                }
+            else:
+                if mi_result is None:
+                    mi_result = triplet_mi(
+                        msa,
+                        weights,
+                        min_valid=min_valid,
+                        min_valid_weight=min_valid_weight,
+                        kernel=mi_kernel,
+                    )
+                mi_result = mi_with_apc_policy(mi_result, maps, apc_universe)
+                screen_scores = {
+                    pair: screen_spec.values(getattr(mi_result, pair.lower()))
+                    for pair in ("AB", "AC", "BC")
+                }
+        proposal = select_candidates(
+            maps,
+            axes,
+            mode=mode,
+            maximum=max_triplets,
+            seed=seed,
+            candidate_file=triplet_candidates,
+            msa=msa,
+            weights=weights,
+            pair_scores=screen_scores,
+            **screen,
+        )
+        fixed = proposal.triples
+        eligible = proposal.summary["eligible_triples"]
+        selection = (
+            "file"
+            if mode == "explicit"
+            else "exhaustive"
+            if mode == "uniform" and len(fixed) == eligible
+            else mode
+        )
+    withheld = None
+    if threebody_model == "maxent":
+        withheld = "Whole-component shuffling breaks pair marginals. No pair-preserving M2 test was performed."
+    elif mode in SCREENED or screen.get("file_origin") in {"same_data", "training"}:
+        withheld = "Candidate screening uses observations overlapping the scored cohort. A selection-aware triple test was not performed."
     labels = read_contacts(contacts, maps) if contacts is not None else {}
     if extra_inputs != {
         "triplet_candidates": _identity(triplet_candidates),
@@ -263,7 +324,16 @@ def write_advanced_results(
         **extra_inputs,
     }
 
-    def score_data(data, row_weights, mi=None, *, collect=False):
+    local_fit = None
+    out.mkdir(parents=True, exist_ok=True)
+    if proposal is not None:
+        manifest = write_candidate_manifest(out, proposal, fmt)
+        outputs["candidate_manifest"] = {"path": "candidate_manifest.json", "rows": len(fixed)}
+        outputs["candidate_selection"] = {"path": manifest["coordinate_table"], "rows": len(fixed)}
+
+    def score_data(data, row_weights, mi=None, *, collect=False, draw=False):
+        nonlocal local_fit
+        evaluate_triples = threebody and (not draw or withheld is None)
         pair_scores = {}
         if permutations or labels or collect:
             if mi is None:
@@ -277,14 +347,29 @@ def write_advanced_results(
             }
         dca_blocks = {}
         if dca:
-            fitted = _fit("dca", direct_couplings, data, row_weights, ridge=ridge, min_valid=min_valid, min_valid_weight=min_valid_weight)
-            dca_blocks = dca_with_apc_policy(fitted, maps, apc_universe)
+            if not draw and observed_dca_for_screen is not None:
+                dca_blocks = observed_dca_for_screen
+            else:
+                fitted = _fit(
+                    "dca",
+                    direct_couplings,
+                    data,
+                    row_weights,
+                    ridge=ridge,
+                    min_valid=min_valid,
+                    min_valid_weight=min_valid_weight,
+                )
+                dca_blocks = dca_with_apc_policy(fitted, maps, apc_universe)
             pair_scores["dca"] = {pair: specs["dca"].values(b) for pair, b in dca_blocks.items()}
         diagnostics = {}
         triples = []
-        if threebody and not fixed:
+        if evaluate_triples and local is not None:
+            triples, local_fit = write_local_fits(
+                out, data, row_weights, proposal, axes, local, fmt, min_valid, min_valid_weight
+            )
+        elif evaluate_triples and not fixed:
             diagnostics = {"status": "no eligible triples"}
-        elif threebody and threebody_model == "global":
+        elif evaluate_triples and threebody_model == "global":
             triples, diagnostics = _fit(
                 "threebody",
                 global_triples,
@@ -294,7 +379,7 @@ def write_advanced_results(
                 l2=global_l2,
                 min_valid=min_valid, min_valid_weight=min_valid_weight,
             )
-        elif threebody:
+        elif evaluate_triples:
             triples = _fit(
                 "threebody",
                 fit_triples,
@@ -313,7 +398,7 @@ def write_advanced_results(
             )
             for key, blocks in pair_scores.items()
         }
-        if threebody:
+        if evaluate_triples:
             vectors["threebody"] = np.array([getattr(row, threebody_score) for row in triples])
         if collect:
             score_sink(mi, dca_blocks)
@@ -335,10 +420,15 @@ def write_advanced_results(
 
         def refit(shuffled):
             w = refit_weights(shuffled)
-            return oriented(score_data(shuffled, w)[3])
+            return oriented(score_data(shuffled, w, draw=True)[3])
 
         null = permutation_test(
-            msa, oriented(observed), refit, permutations=permutations, seed=seed, strata=strata
+            msa,
+            oriented({k: v for k, v in observed.items() if k != "threebody" or withheld is None}),
+            refit,
+            permutations=permutations,
+            seed=seed,
+            strata=strata,
         )
     out.mkdir(parents=True, exist_ok=True)
 
@@ -350,9 +440,12 @@ def write_advanced_results(
 
     def triple_row(index):
         return {
-            key: value
-            for prefix, m, j in zip("abc", maps, fixed[index])
-            for key, value in _site(m, j, prefix).items()
+            "candidate_id": candidate_id(maps, fixed[index]),
+            **{
+                key: value
+                for prefix, m, j in zip("abc", maps, fixed[index])
+                for key, value in _site(m, j, prefix).items()
+            },
         }
 
     ranking = {}
@@ -378,6 +471,21 @@ def write_advanced_results(
             "observed_cells",
             "possible_cells",
         ]
+        if local_fit is not None:
+            triple_fields += [
+                "connected_information_bits",
+                "target_co_information_bits",
+                "status",
+                "information_status",
+            ]
+            outputs["local_model_fits"] = {
+                "path": local_fit["diagnostic_table"],
+                "rows": local_fit["diagnostic_rows"],
+            }
+            outputs["local_state_support"] = {
+                "path": local_fit["frozen_support"],
+                "rows": sum(m.n_sites for m in maps),
+            }
         values = observed["threebody"]
         finite = int(np.isfinite(values).sum())
         # Keep tested candidates in source coordinates even if the model cannot score them.
@@ -444,7 +552,7 @@ def write_advanced_results(
                     "direction": specs["threebody"].direction,
                     "score": values[i],
                     **triple_row(i),
-                    **vars(triples[i]),
+                    **{k: output_value(getattr(triples[i], k)) for k in triple_fields},
                 }
                 for i, rank, competition in ranked_indices(values, threebody_score)
             ),
@@ -503,7 +611,35 @@ def write_advanced_results(
         "settings": settings,
         "outputs": outputs,
         "ranking": ranking,
-        "global_fit": diagnostics,
+        "selection_scope": {
+            "mode": mode,
+            "scope": manifest["scope"],
+            "data_overlap": mode in SCREENED
+            or manifest.get("file_origin") in {"same_data", "training"},
+            "prior_evidence": manifest["prior_source"],
+            "external_prior": manifest["used_external_prior"],
+            "screened": manifest["screened_triples"],
+            "uniform_reserved": manifest["uniform_reserved"],
+            "selected_original_coordinates_sha256": manifest[
+                "selected_original_coordinates_sha256"
+            ],
+        }
+        if manifest is not None
+        else None,
+        "global_fit": diagnostics if threebody_model == "global" else {},
+        "candidate_manifest": "candidate_manifest.json" if manifest is not None else None,
+        "local_fit": local_fit,
+        "triple_calibration": {
+            "status": "withheld"
+            if withheld
+            else "whole_component_shuffle"
+            if permutations
+            else "not_requested",
+            "reason": withheld,
+            "permutations": 0 if withheld else permutations,
+        }
+        if threebody
+        else None,
         "candidates": {
             "eligible": eligible,
             "tested": len(fixed),
@@ -511,6 +647,7 @@ def write_advanced_results(
             "selection": selection,
         },
         "hypotheses": {k: len(v) for k, v in observed.items()},
+        "calibrated_hypotheses": {k: len(observed[k]) for k in null},
         "null_model": "independent whole-component row permutations within strata"
         if permutations
         else None,

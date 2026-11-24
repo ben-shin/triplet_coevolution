@@ -33,12 +33,18 @@ class ScoreSpec:
     interpretation: str
 
     def metadata(
-        self, *, apc_universe: APCUniverse = "retained", threebody_model: str = "local"
+        self, *, apc_universe: APCUniverse = "retained", threebody_model: str | None = None
     ) -> dict[str, str]:
         """Resolve method and support descriptions for a particular run."""
         check_apc_universe(apc_universe)
-        if threebody_model not in ("local", "global"):
-            raise ValueError("threebody_model must be local or global")
+        if threebody_model is None:
+            threebody_model = "maxent" if self.name == "connected_information_bits" else "local"
+        if self.name == "connected_information_bits" and threebody_model != "maxent":
+            raise ValueError(
+                "connected_information_bits describes only the local maximum-entropy hierarchy"
+            )
+        if threebody_model not in ("local", "global", "maxent"):
+            raise ValueError("threebody_model must be local, maxent or global")
         data = asdict(self)
         if self.correction == "APC":
             data["universe"] = f"{apc_universe} axes per component pair"
@@ -48,6 +54,15 @@ class ScoreSpec:
                 data.update(
                     backend="L2 global categorical pseudolikelihood",
                     conditioning="all retained sites, with shared pair and selected triple terms",
+                )
+        if self.method == "threebody" and threebody_model == "maxent":
+            data["missing_policy"] = (
+                "one joint row mask and frozen support per candidate; explicitly selected gap and pooling policy"
+            )
+            if self.name == "threebody_rms":
+                data.update(
+                    backend="zero-sum projection of log smoothed three-site target",
+                    interpretation="Projected marginal interaction on positive Cartesian support.",
                 )
         return data
 
@@ -83,13 +98,43 @@ _COINFO = ScoreSpec(
     "lower", "bits", "none", "three-site marginal", _TRIPLE.universe, _LOCAL_MISSING,
     "Signed co-information. More negative values favor synergy in the net information balance.",
 )
-_REGISTRY = {s.name: s for s in (
-    _MI, replace(_MI, name="mi_apc", field="mi_apc", correction="APC",
-                 interpretation="Marginal MI after blockwise average-product correction."),
-    _DCA, replace(_DCA, name="dca_apc", field="corrected", correction="APC",
-                  interpretation="Coupling norm after blockwise average-product correction."),
-    _TRIPLE, _COINFO,
-)}
+_CONNECTED = ScoreSpec(
+    "connected_information_bits",
+    "threebody",
+    "connected_information_bits",
+    "pairwise maximum entropy via iterative proportional fitting",
+    "higher",
+    "bits",
+    "none",
+    "three-site marginal with all three two-site marginals constrained",
+    _TRIPLE.universe,
+    "shared positive-weight rows and frozen support for M1, M2 and M3",
+    "KL divergence from the saturated target to its fitted pairwise maximum-entropy distribution.",
+)
+_REGISTRY = {
+    s.name: s
+    for s in (
+        _MI,
+        replace(
+            _MI,
+            name="mi_apc",
+            field="mi_apc",
+            correction="APC",
+            interpretation="Marginal MI after blockwise average-product correction.",
+        ),
+        _DCA,
+        replace(
+            _DCA,
+            name="dca_apc",
+            field="corrected",
+            correction="APC",
+            interpretation="Coupling norm after blockwise average-product correction.",
+        ),
+        _TRIPLE,
+        _COINFO,
+        _CONNECTED,
+    )
+}
 
 
 def get_score(name: str, method: Method | None = None, *, units: str | None = None) -> ScoreSpec:

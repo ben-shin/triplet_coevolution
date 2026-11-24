@@ -70,13 +70,17 @@ def _site(row, prefix):
 METHODS = {
     "MI": "Mutual information captures statistical dependence. APC adjusts each component pair for background signal.",
     "DCA": "Ridge mean-field DCA estimates couplings in a model of all retained alignment columns.",
+    "Local maximum entropy": "Connected information measures departure from the fitted pairwise marginal model in bits. Signed co-information and the projected log-linear RMS measure different properties of the same three sites.",
     "Three-body Potts": "Each tested candidate joins one site from each component. Local and conditional models have different interpretations.",
 }
 
 
 def _triple_evidence(directory: Path, triples: list[dict], pair_tables: dict, second_score: str):
     """Join the leading triples to the actual pairwise exports by original MSA columns."""
-    evidence = [[f'{float(row[second_score]):.5g}'] for row in triples]
+    evidence = [
+        [f"{float(row[second_score]):.5g}" if row.get(second_score) else "Undefined"]
+        for row in triples
+    ]
     for pair in ("AB", "AC", "BC"):
         keys = [(row[f"{pair[0].lower()}_original_col"], row[f"{pair[1].lower()}_original_col"])
                 for row in triples]
@@ -376,6 +380,34 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
     if advanced.get("settings", {}).get("threebody"):
         coverage = "<h3>Candidate coverage</h3>" + _table(
             ["Candidate set", "Value"], _definition_rows(advanced["candidates"])
+        )
+    if selected := advanced.get("selection_scope"):
+        scope = "Scores apply to the tested candidates. The manifest records the eligible grid, selection rules, source coordinates and per-candidate rationale."
+        if selected["data_overlap"]:
+            scope += (
+                " Screening and evaluation use overlapping observations. Rankings are exploratory."
+            )
+        if selected["external_prior"]:
+            scope += " An external prior informed candidate selection. An independent evidence source is required for validation."
+        coverage += f"<p>{scope}</p>" + _link(advanced["candidate_manifest"], "Candidate manifest")
+    if fit := advanced.get("local_fit"):
+        coverage += "<h3>Local three-site information</h3><p>One weighted joint table defines the independent M1, pairwise maximum-entropy M2 and saturated M3 model. Connected information is KL(M3 || M2) in bits. Larger values indicate departure from a local pairwise model. A latent mixture can produce that departure.</p>"
+        coverage += _table(["Primary fit status", "Candidates"], fit["primary_fit_status"].items())
+        coverage += _table(
+            ["Information status", "Candidates"], fit["primary_information_status"].items()
+        )
+        coverage += (
+            "<p>"
+            + _link(
+                fit["diagnostic_table"], "Every candidate, prior setting and convergence residual"
+            )
+            + "</p>"
+        )
+    if (calibration := advanced.get("triple_calibration")) and calibration["status"] == "withheld":
+        coverage += (
+            "<p><strong>Triple calibration withheld.</strong> "
+            + _text(calibration["reason"])
+            + "</p>"
         )
     if advanced.get("global_fit"):
         coverage += "<h3>Global fit diagnostics</h3>" + _table(
