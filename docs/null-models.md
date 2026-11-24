@@ -67,3 +67,5 @@ Two fixed strata of 64 observations have state frequencies 0.2 and 0.8 respectiv
 | Within-stratum AB copying | 320/320, 100% (98.8–100%) | 301/320, 94.1% (90.9–96.2%) |
 
 Group composition alone makes the unrestricted random-correspondence hypothesis false. Restricting permutations preserves this composition. Within-group dependence from the added copying mechanism remains detectable. These synthetic observation groups test the block exchangeability assumption. They do not simulate a tree.
+
+For the shared regularized conditional pair Hamiltonian, the conditional workflow also supports a Gibbs bootstrap of held-out predictive gain and optional marginal connected information. [Gibbs design, finite-burn limits and examples](gibbs-bootstrap.md)

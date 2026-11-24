@@ -12,6 +12,8 @@ import numpy as np
 from triplet_coevolution.core.alphabets import CANONICAL
 from triplet_coevolution.core.coordinates import subset_reference_map
 from triplet_coevolution.inference.candidates import select_candidates
+from triplet_coevolution.inference.gibbs_bootstrap import GibbsOptions, parse_sampler
+from triplet_coevolution.inference.gibbs_calibration import gibbs_comparison
 from triplet_coevolution.inference.maxent_support import freeze_support
 from triplet_coevolution.inference.mi import canonical_support_at_cutoff
 from triplet_coevolution.inference.nested_model import (
@@ -43,6 +45,7 @@ from triplet_coevolution.validation.null_policy import mc_interval
 from triplet_coevolution.validation.null_runner import ReplicateStreams, run_null
 
 __all__ = [
+    "GibbsOptions",
     "NestedOptions",
     "compare_nested",
     "evaluate_model",
@@ -350,7 +353,7 @@ def _percentile(clades, draws, seed, key):
     }
 
 
-def _parametric(fit, test_rows, test_weight, observed, opt, draws, seed, fold_id):
+def _parametric(fit, test_rows, test_weight, observed, opt, draws, seed, fold_id, sampler, folds):
     if not draws:
         return {"status": "not_requested", "draws": 0}
     d = fit.design
@@ -362,11 +365,31 @@ def _parametric(fit, test_rows, test_weight, observed, opt, draws, seed, fold_id
     ):
         return {
             "status": "unavailable_data_adaptive_weights_bins_or_screen",
+            **(
+                {"method": "gibbs", "p_conservative": None, "tail_wilson95": None}
+                if sampler
+                else {}
+            ),
             "draws": 0,
             "requested_draws": draws,
         }
     pair, extra = fit.models["pair_only"], fit.models["pair_plus_k"]
     layouts = pair.layout(), extra.layout()
+    held = (test_rows >= 0).all(axis=1) & (test_weight > 0)
+
+    def refit_gain(train, test):
+        fits = [optimize(l, train[fit.complete], fit.weight[fit.complete]) for l in layouts]
+        if any(diag["status"] != "converged" for _, diag in fits):
+            return np.nan
+        losses = [
+            Conditionals(l, test[held]).losses(t) for l, (t, _) in zip(layouts, fits, strict=True)
+        ]
+        return np.average((losses[0] - losses[1]).mean(axis=1), weights=test_weight[held])
+
+    if sampler is not None:
+        return gibbs_comparison(
+            fit, test_rows, test_weight, observed, sampler, draws, seed, fold_id, folds, refit_gain
+        )
     if prod(layouts[0].dimensions) > opt.max_joint_states or len(layouts[0].dimensions) > 32:
         return {
             "status": "unavailable_exact_joint_state_budget",
@@ -387,17 +410,7 @@ def _parametric(fit, test_rows, test_weight, observed, opt, draws, seed, fold_id
         train[fit.rows < 0] = -1
         test = sample(len(test_rows))
         test[test_rows < 0] = -1
-        held = (test >= 0).all(axis=1) & (test_weight > 0)
-        fits = [optimize(l, train[fit.complete], fit.weight[fit.complete]) for l in layouts]
-        if any(diag["status"] != "converged" for _, diag in fits):
-            value = np.nan
-        else:
-            losses = [
-                Conditionals(l, test[held]).losses(t)
-                for l, (t, _) in zip(layouts, fits, strict=True)
-            ]
-            value = np.average((losses[0] - losses[1]).mean(axis=1), weights=test_weight[held])
-        return {"gain": [value]}
+        return {"gain": [refit_gain(train, test)]}
 
     run = run_null(
         {"gain": [observed]},
@@ -443,6 +456,7 @@ def compare_nested(
     weight_options=None,
     bootstrap_draws=0,
     null_draws=0,
+    null_sampler=None,
     seed=0,
 ):
     """Prespecified common-fit comparison, estimating positive loss gain on unobserved clades."""
@@ -461,6 +475,9 @@ def compare_nested(
     weights = _weights(weight_options, ids)
     bootstrap_draws = _integer(bootstrap_draws, "bootstrap_draws", 0, 100000)
     null_draws = _integer(null_draws, "null_draws", 0, 100000)
+    sampler = parse_sampler(null_sampler)
+    if sampler is not None and not null_draws:
+        raise ValueError("Gibbs null_sampler requires positive null_draws")
     seed = _integer(seed, "seed", 0)
     if (
         len(plan.folds) * (1 + null_draws) > 10_000
@@ -609,8 +626,30 @@ def compare_nested(
             ci.update(status="incomplete_test_clade_support", lower=None, upper=None)
         row["heldout_clade_interval"] = ci
         row["parametric_null"] = _parametric(
-            fit, encoded, w.weights, row["gain_nats_per_site"], opt, null_draws, seed, fold.fold_id
+            fit,
+            encoded,
+            w.weights,
+            row["gain_nats_per_site"],
+            opt,
+            null_draws,
+            seed,
+            fold.fold_id,
+            sampler,
+            len(plan.folds),
         )
+    if sampler is not None:
+        for row in folds:
+            row.setdefault(
+                "parametric_null",
+                {
+                    "method": "gibbs",
+                    "status": "withheld_observed_fit_or_support",
+                    "fold_status": row["status"],
+                    "requested_draws": null_draws,
+                    "draws": 0,
+                    "p_conservative": None,
+                },
+            )
     group_values = [
         r["mean_gain_nats_per_site"] for r in clades if r["mean_gain_nats_per_site"] is not None
     ]
@@ -632,6 +671,7 @@ def compare_nested(
         "clade_macro_gain_nats_per_site": float(np.mean(group_values)) if group_values else None,
         "heldout_clade_interval": interval,
         "null_draws_per_fold": null_draws,
+        **({"null_sampler": sampler.metadata()} if sampler else {}),
         "bootstrap_draws": bootstrap_draws,
         "gain_definition": "pair-only minus pair-plus-K conditional log loss in nats per held-out site",
         "training_objective": "weighted mean over complete rows and sites of negative log conditionals plus L2 penalties",

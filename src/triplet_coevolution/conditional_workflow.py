@@ -12,6 +12,7 @@ import typer
 from triplet_coevolution.analysis_plan import match_metadata
 from triplet_coevolution.clade_workflow import CladePolicy, _relocated, _source
 from triplet_coevolution.config import _unique
+from triplet_coevolution.inference.gibbs_bootstrap import parse_sampler
 from triplet_coevolution.inference.nested import NestedOptions, compare_nested, write_nested
 from triplet_coevolution.io.score_store import file_digest
 from triplet_coevolution.msa.support import site_masks
@@ -88,6 +89,7 @@ def conditional_design(config):
         "candidate_options",
         "bootstrap_draws",
         "null_draws",
+        "null_sampler",
         "seed",
     }:
         raise ValueError("unknown conditional setting")
@@ -95,6 +97,14 @@ def conditional_design(config):
         raise ValueError(
             "prespecify one comparison for a parametric null; run descriptive regularization sensitivity separately"
         )
+    if "null_sampler" in opts:
+        if opts["null_sampler"] is None:
+            raise ValueError("conditional null_sampler must specify method exact or gibbs")
+        sampler = parse_sampler(opts["null_sampler"])
+        if sampler is not None and (
+            type(opts.get("null_draws")) is not int or opts["null_draws"] < 1
+        ):
+            raise ValueError("Gibbs null_sampler requires positive null_draws")
     return policy, settings, opts
 
 
@@ -146,6 +156,16 @@ def write_conditional(stage, design, *, msa, maps, table, digests):
                 "clade_macro_gain_nats_per_site": record["clade_macro_gain_nats_per_site"],
                 "heldout_clade_interval": record["heldout_clade_interval"],
                 "summary": name + "/nested_summary.json",
+                **(
+                    {
+                        "null_sampler": record["null_sampler"],
+                        "null_status_by_fold": {
+                            r["fold_id"]: r["parametric_null"]["status"] for r in record["folds"]
+                        },
+                    }
+                    if record.get("null_sampler")
+                    else {}
+                ),
             }
         )
     report = "<h1>Held-out conditional prediction</h1><p>Positive gain means lower paired test log loss for the model with three-site terms, in nats per site. Each linked fit includes train/test support, per-site losses, fitted models and interval diagnostics. The grid is descriptive. Predictive gain depends on the selected graph, clade partition and observations.</p>"
@@ -157,6 +177,13 @@ def write_conditional(stage, design, *, msa, maps, table, digests):
             else str(interval.get("status", "unavailable")).replace("_", " ")
         )
         report += f'<p><a href="{row["summary"]}">L2 {row["l2"]:g}</a> · {escape(row["status"])} · {row["evaluated_folds"]} evaluated folds · mean gain {escape(str(row["clade_macro_gain_nats_per_site"]))} · clade interval {escape(ci)}</p>'
+        if row.get("null_status_by_fold"):
+            statuses = ", ".join(f"{k}: {v}" for k, v in row["null_status_by_fold"].items())
+            report += (
+                "<p>Gibbs pair-only bootstrap · "
+                + escape(statuses)
+                + ". Each fold records its mixing checks, refits and tail availability.</p>"
+            )
     (stage / "report.html").write_text(
         '<!doctype html><html lang="en"><meta charset="utf-8"><title>Held-out conditional prediction</title>'
         + report

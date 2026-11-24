@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "clades": {
+    "source": "Synthetic clades from the first edge of the supplied example tree.",
+    "clade_tree": {"newick": "observations.nwk"},
+    "tree_depth": 1,
+    "weight_policy": "uniform"
+  },
+  "panel": {"A": [1], "B": [2], "C": [1]},
+  "triples": [[1, 2, 1]],
+  "options": {"l2": 0.3},
+  "null_draws": 19,
+  "null_sampler": {
+    "method": "gibbs",
+    "chains": 4,
+    "burn_sweeps": 32,
+    "diagnostic_sweeps": 256,
+    "max_rhat": 1.05,
+    "min_ess": 100,
+    "max_total_tv": 0.001
+  },
+  "seed": 41
+}
