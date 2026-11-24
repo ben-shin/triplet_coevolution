@@ -46,6 +46,7 @@ include = ["triplet_coevolution*"]
   "benchmarks/independent_cohort_*.gz", "benchmarks/*.md",
 ]
 "share/triplet-coevolution/examples/structure" = ["examples/structure/*"]
+"share/triplet-coevolution/examples/hpc" = ["examples/hpc/*.sh"]
 "share/triplet-coevolution/examples/mixed" = ["examples/mixed/*"]
 "share/triplet-coevolution/examples/workflow" = ["examples/workflow/*"]
 "share/triplet-coevolution/examples/families" = ["examples/families/*.tsv", "examples/families/*.json"]

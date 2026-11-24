@@ -294,6 +294,127 @@ class _Counts:
         return result
 
 
+def _validate_design(
+    observed, identity, null_name, draws, planned_draws, seed, directions, max_t, joint_draws
+):
+    if not isinstance(identity, Mapping) or not identity:
+        raise ValueError("null identity must declare data, model settings and coordinate universe")
+    if not isinstance(null_name, str) or not null_name.strip():
+        raise ValueError("null_name must be a nonempty scientific null identity")
+    for option in (max_t, joint_draws):
+        if not isinstance(option, bool):
+            raise TypeError("max_t and joint_draws must be booleans")
+    if max_t and not joint_draws:
+        raise ValueError("maxT requires a declared coherent joint draw for each family")
+    b = _integer(draws, "draws", 1)
+    final = _integer(b if planned_draws is None else planned_draws, "planned_draws", b)
+    seed = _integer(seed, "seed", 0, 2**256 - 1)
+    raw = _arrays(observed)
+    keys = tuple(raw)
+    if directions is None:
+        directions = dict.fromkeys(keys, "higher")
+    if (
+        not isinstance(directions, Mapping)
+        or set(directions) != set(keys)
+        or any(k not in ("higher", "lower") for k in directions.values())
+    ):
+        raise ValueError("supply one higher/lower direction per observed null family")
+    return b, final, seed, raw, directions
+
+
+def _prepare_evidence(
+    raw, evaluate, identity, null_name, final, seed, directions, max_t, joint_draws, require_source
+):
+    actual = {k: np.array(v, dtype=np.float64, copy=True) for k, v in raw.items()}
+    threshold = {}
+    for name, v in actual.items():
+        oriented = v if directions[name] == "higher" else -v
+        limit = np.full(v.shape, np.inf)
+        finite = np.isfinite(v)
+        with np.errstate(over="ignore"):
+            limit[finite] = oriented[finite] - TIE_EPS * np.maximum(1.0, np.abs(v[finite]))
+        threshold[name] = limit
+    science = json.loads(canonical(identity))
+    header = {
+        "schema": SCHEMA,
+        "rng": RNG,
+        "seed": seed,
+        "null_name": null_name,
+        "identity": science,
+        "science_sha256": digest(canonical(science)),
+        "observed": _data_identity(actual),
+        "directions": dict(directions),
+        "planned_draws": final,
+        "max_t": max_t,
+        "joint_draws": joint_draws,
+        "source": _source_identity(evaluate),
+        "tie_relative_tolerance": TIE_EPS,
+        "invalid_draw_policy": "worst_case_exceedance",
+    }
+    if (
+        require_source
+        and header["source"]["evaluator_source_sha256"] is None
+        and not (
+            isinstance(science.get("evaluator_sha256"), str)
+            and len(science["evaluator_sha256"]) == 64
+            and all(c in "0123456789abcdef" for c in science["evaluator_sha256"])
+        )
+    ):
+        raise ValueError(
+            "checkpointed callback without inspectable source requires evaluator_sha256 in identity"
+        )
+    return actual, threshold, header
+
+
+def _finish_run(header, acc, actual, threshold, *, resources, resumed, workers, elapsed):
+    b = len(acc.complete)
+    final = header["planned_draws"]
+    max_t = header["max_t"]
+    families = acc.finish(actual, threshold)
+    manifest = {
+        **header,
+        "plan_sha256": digest(canonical(header)),
+        "replicate_evidence_sha256": hashlib.sha256(memoryview(acc.record_hashes)).hexdigest(),
+        "count_sha256": digest(
+            canonical(
+                {
+                    k: [
+                        digest(f.exceedances.astype("<i8", copy=False).tobytes()),
+                        digest(f.invalid_draws.astype("<i8", copy=False).tobytes()),
+                    ]
+                    for k, f in families.items()
+                }
+            )
+        ),
+        "requested_draws": b,
+        "completed_draws": acc.n,
+        "restored_draws": resumed,
+        "new_draws": acc.n - resumed,
+        "workers": workers,
+        "status": "complete_prespecified" if b == final else "interim_exploratory",
+        "is_final": b == final,
+        "resolution": 1 / (b + 1),
+        "completed_id_range": [0, b - 1],
+        "workspace": resources,
+        "elapsed_seconds": elapsed,
+        "max_t_definition": "maximum oriented statistic in each joint replicate within family; any nonfinite member makes the maximum unknown and conservative"
+        if max_t
+        else None,
+    }
+    return NullRun(families, manifest)
+
+
+def _progress_rate(done, restored, requested, work_start):
+    new = max(0, done - restored) if work_start is not None else 0
+    elapsed = time.monotonic() - work_start if work_start is not None else 0
+    rate = new / elapsed if new and elapsed > 0 else None
+    return {
+        "new_draws": new,
+        "draws_per_second": rate,
+        "estimated_remaining_seconds": (requested - done) / rate if rate else None,
+    }
+
+
 def run_null(
     observed,
     evaluate,
@@ -322,29 +443,12 @@ def run_null(
     and coordinate identities in identity. Each family defines its own coherent maxT.
     """
     start = time.monotonic()
-    if not isinstance(identity, Mapping) or not identity:
-        raise ValueError("null identity must declare data, model settings and coordinate universe")
-    if not isinstance(null_name, str) or not null_name.strip():
-        raise ValueError("null_name must be a nonempty scientific null identity")
-    for option in (resume, max_t, joint_draws):
-        if not isinstance(option, bool):
-            raise TypeError("resume, max_t and joint_draws must be booleans")
-    if max_t and not joint_draws:
-        raise ValueError("maxT requires a declared coherent joint draw for each family")
-    b = _integer(draws, "draws", 1)
-    final = _integer(b if planned_draws is None else planned_draws, "planned_draws", b)
+    if not isinstance(resume, bool):
+        raise TypeError("resume must be boolean")
     workers = _integer(workers, "workers", 1, MAX_WORKERS)
-    seed = _integer(seed, "seed", 0, 2**256 - 1)
-    raw = _arrays(observed)
-    keys = tuple(raw)
-    if directions is None:
-        directions = dict.fromkeys(keys, "higher")
-    if (
-        not isinstance(directions, Mapping)
-        or set(directions) != set(keys)
-        or any(k not in ("higher", "lower") for k in directions.values())
-    ):
-        raise ValueError("supply one higher/lower direction per observed null family")
+    b, final, seed, raw, directions = _validate_design(
+        observed, identity, null_name, draws, planned_draws, seed, directions, max_t, joint_draws
+    )
     resources = null_workspace(
         (len(v) for v in raw.values()),
         draws=b,
@@ -366,47 +470,22 @@ def run_null(
         limit = _integer(checkpoint_budget_bytes, "checkpoint budget", 1)
         if checkpoint is not None and resources["estimated_checkpoint_bytes"] > limit:
             raise ValueError("planned null journal exceeds checkpoint budget")
-    actual = {k: np.array(v, dtype=np.float64, copy=True) for k, v in raw.items()}
-    threshold = {}
-    for name, v in actual.items():
-        oriented = v if directions[name] == "higher" else -v
-        limit = np.full(v.shape, np.inf)
-        finite = np.isfinite(v)
-        with np.errstate(over="ignore"):
-            limit[finite] = oriented[finite] - TIE_EPS * np.maximum(1.0, np.abs(v[finite]))
-        threshold[name] = limit
-    science = json.loads(canonical(identity))
-    header = {
-        "schema": SCHEMA,
-        "rng": RNG,
-        "seed": seed,
-        "null_name": null_name,
-        "identity": science,
-        "science_sha256": digest(canonical(science)),
-        "observed": _data_identity(actual),
-        "directions": dict(directions),
-        "planned_draws": final,
-        "max_t": max_t,
-        "joint_draws": joint_draws,
-        "source": _source_identity(evaluate),
-        "tie_relative_tolerance": TIE_EPS,
-        "invalid_draw_policy": "worst_case_exceedance",
-    }
-    if (
-        checkpoint
-        and header["source"]["evaluator_source_sha256"] is None
-        and not (
-            isinstance(science.get("evaluator_sha256"), str)
-            and len(science["evaluator_sha256"]) == 64
-            and all(c in "0123456789abcdef" for c in science["evaluator_sha256"])
-        )
-    ):
-        raise ValueError(
-            "checkpointed callback without inspectable source requires evaluator_sha256 in identity"
-        )
+    actual, threshold, header = _prepare_evidence(
+        raw,
+        evaluate,
+        identity,
+        null_name,
+        final,
+        seed,
+        directions,
+        max_t,
+        joint_draws,
+        bool(checkpoint),
+    )
     schedule = _schedule(replicate_order, b)
     acc = _Counts(actual, b, max_t)
     guard = threading.RLock()
+    work_start = None
 
     def emit(event, rid=None, **details):
         if progress is None:
@@ -420,6 +499,7 @@ def run_null(
                     "requested_draws": b,
                     "planned_draws": final,
                     "elapsed_seconds": time.monotonic() - start,
+                    **_progress_rate(acc.n, resumed, b, work_start),
                     **details,
                 }
             )
@@ -439,6 +519,7 @@ def run_null(
                 for rid, packed in journal.records():
                     acc.add(rid, packed)
             resumed = acc.n
+            work_start = time.monotonic()
             emit("run_started", restored_draws=resumed, workers=workers)
             todo = (int(i) for i in schedule if not acc.complete[i])
             for rid, packed in _compute(todo, workers, compute):
@@ -446,39 +527,18 @@ def run_null(
                     journal.append(rid, packed)
                 acc.add(rid, packed)
                 emit("replicate_completed", rid)
-            families = acc.finish(actual, threshold)
+            result = _finish_run(
+                header,
+                acc,
+                actual,
+                threshold,
+                resources=resources,
+                resumed=resumed,
+                workers=workers,
+                elapsed=time.monotonic() - start,
+            )
     except BaseException as exc:
         emit("run_failed", exception_type=type(exc).__name__)
         raise
     emit("run_completed")
-    manifest = {
-        **header,
-        "plan_sha256": digest(canonical(header)),
-        "replicate_evidence_sha256": hashlib.sha256(memoryview(acc.record_hashes)).hexdigest(),
-        "count_sha256": digest(
-            canonical(
-                {
-                    k: [
-                        digest(f.exceedances.astype("<i8", copy=False).tobytes()),
-                        digest(f.invalid_draws.astype("<i8", copy=False).tobytes()),
-                    ]
-                    for k, f in families.items()
-                }
-            )
-        ),
-        "requested_draws": b,
-        "completed_draws": acc.n,
-        "restored_draws": resumed,
-        "new_draws": acc.n - resumed,
-        "workers": workers,
-        "status": "complete_prespecified" if b == final else "interim_exploratory",
-        "is_final": b == final,
-        "resolution": 1 / (b + 1),
-        "completed_id_range": [0, b - 1],
-        "workspace": resources,
-        "elapsed_seconds": time.monotonic() - start,
-        "max_t_definition": "maximum oriented statistic in each joint replicate within family; any nonfinite member makes the maximum unknown and conservative"
-        if max_t
-        else None,
-    }
-    return NullRun(families, manifest)
+    return result

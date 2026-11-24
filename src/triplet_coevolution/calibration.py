@@ -170,9 +170,7 @@ def _write_calibration(
     return _one_calibration(directory, source, policy, data, progress)
 
 
-def _one_calibration(
-    directory, source, policy, data, progress, study_digest=None, tree_inputs=None
-):
+def _calibration_design(source, policy, data, *, study_digest=None, tree_inputs=None):
     model = CalibrationModel(data, policy, tree_inputs=tree_inputs)
     definitions = {
         s.name: s.metadata(
@@ -230,6 +228,15 @@ def _one_calibration(
         )
         identity["local_primary_setting"] = asdict(model.options)
     directions = {g: get_score(members[0][0]).direction for g, members in model.groups.items()}
+    return model, definitions, scientific_policy, identity, directions
+
+
+def _one_calibration(
+    directory, source, policy, data, progress, study_digest=None, tree_inputs=None
+):
+    model, definitions, scientific_policy, identity, directions = _calibration_design(
+        source, policy, data, study_digest=study_digest, tree_inputs=tree_inputs
+    )
     directory.mkdir(parents=True, exist_ok=True)
     lock = Lock()
     with (directory / "progress.jsonl").open("w", encoding="utf8") as log:
@@ -259,6 +266,11 @@ def _one_calibration(
             checkpoint_budget_bytes=policy.checkpoint_mib * 1024**2,
             progress=report,
         )
+    return _publish_calibration(directory, model, job, definitions, scientific_policy, identity)
+
+
+def _publish_calibration(directory, model, job, definitions, scientific_policy, identity):
+    policy = model.policy
     families = _write_results(directory, model, job)
     info = {
         "schema_version": 1,
@@ -507,6 +519,7 @@ def calibrate(
     progress: Annotated[
         bool, typer.Option("--progress", help="Emit JSON-line progress on stderr.")
     ] = False,
+    memory_mib: Annotated[int | None, typer.Option("--memory-mib", min=1)] = None,
 ):
     """Calibrate chosen archived statistics using the original matched observations."""
     try:
@@ -522,7 +535,12 @@ def calibrate(
                 raise ValueError("--scores requires the native scores/score_manifest.json")
             run = manifest.parent.parent
         policy = NullPolicy.from_config(
-            config, workers=workers, draws=draws, checkpoint=checkpoint, resume=resume
+            config,
+            workers=workers,
+            draws=draws,
+            checkpoint=checkpoint,
+            resume=resume,
+            memory_mib=memory_mib,
         )
         relocated = None
         if inputs:
