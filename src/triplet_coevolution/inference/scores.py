@@ -8,7 +8,7 @@ from typing import Literal
 import numpy as np
 
 from triplet_coevolution.core.coordinates import ReferenceCoordinates
-from triplet_coevolution.inference.mi import MIBlock, TripletMI, apc
+from triplet_coevolution.inference.mi import MIBlock, TripletMI, apc, check_min_valid_weight
 from triplet_coevolution.inference.potts import PAIRS, DCABlock
 
 Method = Literal["mi", "dca", "threebody"]
@@ -212,7 +212,7 @@ def ranked_indices(
 def pair_coverage(
     block: MIBlock | DCABlock, x_map: ReferenceCoordinates, y_map: ReferenceCoordinates,
     score: str, *, require_reference: bool = False, min_valid: int = 2,
-    max_pairs: int | None = 1000, apc_universe: APCUniverse = "retained",
+    min_valid_weight: float = 0.0, max_pairs: int | None = 1000, apc_universe: APCUniverse = "retained",
 ) -> dict[str, int | bool]:
     """Report the successive coordinate, support, finite-score and display filters."""
     spec = get_score(score)
@@ -221,14 +221,24 @@ def pair_coverage(
     mapped_only = require_reference or (spec.correction == "APC" and apc_universe == "reference")
     ix = np.ix_(*coordinate_axes((x_map, y_map), mapped_only))
     selected = values[ix]
-    support = block.n_valid[ix] >= min_valid
+    count_ok = block.n_valid[ix] >= min_valid
+    support = count_ok & (block.valid_weight[ix] >= check_min_valid_weight(min_valid_weight))
     finite = int(np.count_nonzero(np.isfinite(selected) & support))
     eligible = selected.size
     supported = int(support.sum())
     exported = finite if max_pairs is None else min(finite, max_pairs)
     return {
-        "total": values.size, "eligible": eligible, "finite": finite,
-        "excluded_coordinates": values.size - eligible, "below_min_valid": eligible - supported,
-        "nonfinite_after_support": supported - finite, "exported": exported,
+        "total": values.size,
+        "eligible": eligible,
+        "finite": finite,
+        "excluded_coordinates": values.size - eligible,
+        "below_min_valid": int(eligible - count_ok.sum()),
+        **(
+            {"below_min_valid_weight_after_count": int(count_ok.sum()) - supported}
+            if min_valid_weight
+            else {}
+        ),
+        "nonfinite_after_support": supported - finite,
+        "exported": exported,
         "complete": exported == finite,
     }

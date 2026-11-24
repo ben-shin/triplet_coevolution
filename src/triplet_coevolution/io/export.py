@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from triplet_coevolution.core.coordinates import ReferenceCoordinates
-from triplet_coevolution.inference.mi import MIBlock, TripletMI
+from triplet_coevolution.inference.mi import MIBlock, TripletMI, check_min_valid_weight
 from triplet_coevolution.inference.potts import DCABlock
 from triplet_coevolution.inference.scores import Method, coordinate_axes, get_score, ranked_indices
 
@@ -115,6 +115,7 @@ def ranked_mi_rows(
   score: str = "mi_apc",
   max_pairs: int | None = 1000,
   min_valid: int = 2,
+  min_valid_weight: float = 0.0,
   require_reference: bool = False,
 ) -> list[dict[str, object]]:
   """rank mi pairs by score and include original aln and ref pos
@@ -124,11 +125,12 @@ def ranked_mi_rows(
   ref gaps retain original aln cols and get empty ref pos in csv
   """
 
+  check_min_valid_weight(min_valid_weight)
   _check_options(score, max_pairs, min_valid, require_reference)
   _check_block(block, x_map, y_map)
 
   return list(_ranked_pair_rows(
-    block, x_map, y_map, score, max_pairs, min_valid, require_reference,
+    block, x_map, y_map, score, max_pairs, min_valid, require_reference, min_valid_weight,
   ))
 
 
@@ -140,16 +142,17 @@ def _ranked_pair_rows(
   max_pairs: int | None,
   min_valid: int,
   require_reference: bool,
+  min_valid_weight: float,
 ) -> Iterator[dict[str, object]]:
   spec = get_score(score)
   x_axis, y_axis = coordinate_axes((x_map, y_map), require_reference)
   values = spec.values(block)
-  counts = block.n_valid
+  support = (block.n_valid >= min_valid) & (block.valid_weight >= min_valid_weight)
   if (len(x_axis), len(y_axis)) != values.shape:
     ix = np.ix_(x_axis, y_axis)
-    values, counts = values[ix], counts[ix]
-  if np.any(counts < min_valid):
-    values = np.where(counts >= min_valid, values, np.nan)
+    values, support = values[ix], support[ix]
+  if not support.all():
+    values = np.where(support, values, np.nan)
   raw, corrected = (
     ("mi_bits", "mi_apc") if spec.method == "mi" else ("dca_frobenius", "dca_apc")
   )
@@ -194,13 +197,15 @@ def write_mi_table(
   score: str = "mi_apc",
   max_pairs: int | None = 1000,
   min_valid: int = 2,
+  min_valid_weight: float = 0.0,
   require_reference: bool = False,
 ) -> Path:
   """write ranked mi pairs to csv or tsv"""
 
+  check_min_valid_weight(min_valid_weight)
   _check_options(score, max_pairs, min_valid, require_reference)
   _check_block(block, x_map, y_map)
-  rows = _ranked_pair_rows(block, x_map, y_map, score, max_pairs, min_valid, require_reference)
+  rows = _ranked_pair_rows(block, x_map, y_map, score, max_pairs, min_valid, require_reference, min_valid_weight)
   return _write_table(path, FIELDS, rows)
 
 
@@ -214,9 +219,11 @@ def write_dca_table(
   score: str = "dca_apc",
   max_pairs: int | None = 1000,
   min_valid: int = 2,
+  min_valid_weight: float = 0.0,
   require_reference: bool = False,
 ) -> Path:
   """Write a ranked DCA view after selecting the statistic on the full block."""
+  check_min_valid_weight(min_valid_weight)
   _check_options(score, max_pairs, min_valid, require_reference, method="dca")
   if pair != x_map.component + y_map.component or pair not in {"AB", "AC", "BC"}:
     raise ValueError("DCA pair and reference maps must match")
@@ -224,7 +231,7 @@ def write_dca_table(
     raise TypeError("block must be a DCABlock")
   if any(arr.shape != (x_map.n_sites, y_map.n_sites) for arr in vars(block).values()):
     raise ValueError("DCA arrays must match reference maps")
-  rows = _ranked_pair_rows(block, x_map, y_map, score, max_pairs, min_valid, require_reference)
+  rows = _ranked_pair_rows(block, x_map, y_map, score, max_pairs, min_valid, require_reference, min_valid_weight)
   return _write_table(path, DCA_FIELDS, rows)
 
 
@@ -257,6 +264,7 @@ def write_triplet_mi_tables(
   score: str = "mi_apc",
   max_pairs: int | None = 1000,
   min_valid: int = 2,
+  min_valid_weight: float = 0.0,
   require_reference: bool = False,
   fmt: str = "tsv",
 ) -> dict[str, Path]:
@@ -268,6 +276,7 @@ def write_triplet_mi_tables(
   if fmt not in {"csv", "tsv"}:
     raise ValueError("fmt must be csv or tsv")
 
+  check_min_valid_weight(min_valid_weight)
   _check_options(score, max_pairs, min_valid, require_reference)
 
   blocks = (
@@ -293,6 +302,7 @@ def write_triplet_mi_tables(
       score=score,
       max_pairs=max_pairs,
       min_valid=min_valid,
+      min_valid_weight=min_valid_weight,
       require_reference=require_reference,
     )
 

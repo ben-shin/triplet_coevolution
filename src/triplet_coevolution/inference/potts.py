@@ -7,7 +7,13 @@ import numpy as np
 
 from triplet_coevolution.core.alignment import MatchedTripletMSA
 from triplet_coevolution.core.alphabets import CANONICAL
-from triplet_coevolution.inference.mi import _check_min_valid, _get_weights, apc
+from triplet_coevolution.inference.mi import (
+    _check_min_valid,
+    _get_weights,
+    _pair_support_at_cutoff,
+    apc,
+    check_min_valid_weight,
+)
 from triplet_coevolution.inference.weights import SequenceWeightResult
 
 PAIRS = tuple(combinations(range(3), 2))
@@ -29,12 +35,14 @@ def direct_couplings(
     *,
     ridge: float = 0.1,
     min_valid: int = 2,
+    min_valid_weight: float = 0.0,
 ) -> dict[str, DCABlock]:
     """Fit one inverse covariance model across all retained sites of A, B and C."""
     if not np.isfinite(ridge) or ridge <= 0:
         raise ValueError("DCA ridge must be finite and positive")
     min_valid = _check_min_valid(min_valid)
-    w = _get_weights(weights, msa.n_observations)
+    min_valid_weight = check_min_valid_weight(min_valid_weight)
+    w = _get_weights(weights, msa.n_observations,msa)
     sites = []
     slices = []
     valid = []
@@ -101,10 +109,11 @@ def direct_couplings(
         rows_a = valid[a] & (w > 0)[:, None]
         n_valid = rows_a.astype(np.int64).T @ valid[b]
         valid_weight = (w[:, None] * rows_a).T @ valid[b]
+        _pair_support_at_cutoff(valid_weight,rows_a,valid[b],w,min_valid_weight)
         scores = np.full(n_valid.shape, np.nan)
         for i, sx in enumerate(slices[a]):
             for j, sy in enumerate(slices[b]):
-                if n_valid[i, j] < min_valid:
+                if n_valid[i,j] < min_valid or valid_weight[i,j] < min_valid_weight:
                     continue
                 coupling = features[:, sx].T @ features[:, sy] if dual else -precision[sx, sy]
                 if coupling.size:

@@ -15,7 +15,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 from triplet_coevolution.core.coordinates import ReferenceCoordinates, SiteCoordinate
-from triplet_coevolution.inference.mi import MIBlock, TripletMI
+from triplet_coevolution.inference.mi import MIBlock, TripletMI, check_min_valid_weight
 from triplet_coevolution.inference.potts import DCABlock
 from triplet_coevolution.inference.scores import get_score
 
@@ -30,6 +30,13 @@ CONVENTION = "Current and original exported columns and reference positions are 
 def file_digest(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _unique_members(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("duplicate JSON field in score metadata")
+    return result
 
 
 def _json_bytes(value):
@@ -97,9 +104,15 @@ class ScoreStore:
     min_valid: int
     require_reference: bool
 
+    @property
+    def min_valid_weight(self) -> float:
+        """Older native and v1 runs used a row-count cutoff alone."""
+        return check_min_valid_weight(self.provenance.get("min_valid_weight", 0.0))
+
     def eligible(self, pair: str, *, reference_only: bool = False) -> np.ndarray:
         """Return support and reference eligibility, independent of finite method scores."""
         keep = self.n_valid[pair] >= self.min_valid
+        keep &= self.valid_weight[pair] >= self.min_valid_weight
         if self.require_reference or reference_only:
             a, b = (self.maps["ABC".index(c)] for c in pair)
             x, y = (
@@ -127,6 +140,9 @@ class ScoreStore:
             self.provenance["weight_sum"],
             self.provenance["include_gaps"],
             self.min_valid,
+            apc_universe=self.provenance.get("apc_universe", "retained"),
+            kernel=self.provenance.get("mi_kernel", "batched"),
+            min_valid_weight=self.min_valid_weight,
         )
         dca = {
             p: DCABlock(
@@ -168,6 +184,7 @@ def _validate(store):
             or any(c not in "0123456789abcdef" for c in digest)
         ):
             raise ValueError(f"invalid input SHA-256 for {name}")
+    min_weight = store.min_valid_weight
     n = prov.get("n_observations")
     weight = prov.get("weight_sum")
     if (
@@ -209,6 +226,12 @@ def _validate(store):
                 or np.any(block > weight + 1e-8 * max(1, weight))
             ):
                 raise ValueError(f"invalid pair support weights for {pair}")
+            elif (
+                name in store.scores
+                and min_weight
+                and np.any((store.valid_weight[pair] < min_weight) & np.isfinite(block))
+            ):
+                raise ValueError(f"finite {name} below declared minimum weight in {pair}")
             elif name in store.scores and np.any((store.n_valid[pair] < 0) & np.isfinite(block)):
                 raise ValueError(f"finite {name} on a legacy cell of unknown support in {pair}")
 
@@ -248,6 +271,9 @@ def from_results(
         "weight_sum": float(mi.weight_sum),
         "include_gaps": bool(mi.include_gaps),
         "origin": "native_full_matrices",
+        "min_valid_weight": float(mi.min_valid_weight),
+        "mi_kernel": mi.kernel,
+        "apc_universe": mi.apc_universe,
     }
     # File contents identify sources independently of machine-specific path names.
     prov["inputs"] = {
@@ -301,6 +327,11 @@ def write_score_store(directory: Path, store: ScoreStore) -> Path:
             "require_reference": store.require_reference,
             "provenance": store.provenance,
         }
+        # Canonical JSON sorts string keys. Convert e.g. integer histogram keys
+        # to their on-disk representation before sorting, and reject collisions.
+        manifest = json.loads(
+            json.dumps(manifest, allow_nan=False), object_pairs_hook=_unique_members
+        )
         manifest["manifest_sha256"] = hashlib.sha256(_json_bytes(manifest)).hexdigest()
         (stage / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2, allow_nan=False) + "\n", encoding="utf-8"
@@ -321,7 +352,7 @@ def load_score_store(path: Path) -> ScoreStore:
     if path.is_dir():
         path = path / MANIFEST_NAME
     try:
-        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta = json.loads(path.read_text(encoding="utf-8"),object_pairs_hook=_unique_members)
         saved = meta.pop("manifest_sha256")
         if hashlib.sha256(_json_bytes(meta)).hexdigest() != saved:
             raise ValueError("score manifest checksum mismatch")

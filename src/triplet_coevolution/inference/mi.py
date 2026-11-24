@@ -1,13 +1,14 @@
 # weighted mi and apc for matched msa comps
 
 from dataclasses import dataclass
+from math import fsum
 from typing import Literal
 
 import numpy as np
 
 from triplet_coevolution.core.alignment import ComponentMSA, MatchedTripletMSA
 from triplet_coevolution.core.alphabets import CANONICAL
-from triplet_coevolution.inference.weights import SequenceWeightResult
+from triplet_coevolution.inference.weights import SequenceWeightResult, verify_weight_alignment
 
 MIKernel = Literal["batched", "v1_scalar"]
 
@@ -37,6 +38,7 @@ class TripletMI:
     min_valid: int
     apc_universe: str = "retained"
     kernel: MIKernel = "batched"
+    min_valid_weight: float = 0.0
 
 
 def _check_min_valid(min_valid: int) -> int:
@@ -49,15 +51,51 @@ def _check_min_valid(min_valid: int) -> int:
     return int(min_valid)
 
 
+def check_min_valid_weight(value):
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (float, int, np.floating, np.integer))
+        or not np.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError("min_valid_weight must be finite and nonnegative")
+    return float(value)
+
+
+def canonical_support_at_cutoff(support, valid, weights, threshold):
+    """Use the correctly rounded sum near an inclusive cutoff across reduction kernels."""
+    if threshold > 0 and abs(support - threshold) <= len(weights) * np.finfo(float).eps * threshold:
+        return fsum(weights[valid])
+    return support
+
+
+def _pair_support_at_cutoff(support, valid_a, valid_b, weights, threshold):
+    if threshold <= 0 or (weights.sum() <= 2**53 and np.all(weights == np.floor(weights))):
+        return
+    # BLAS dot and NumPy reductions can differ by an ulp on a threshold tie.
+    near = np.abs(support - threshold) <= len(weights) * np.finfo(float).eps * threshold
+    if not near.any():
+        return
+    active = weights > 0
+    complete = valid_a[active].all(axis=0)[:, None] & valid_b[active].all(axis=0)[None, :] & near
+    support[complete] = fsum(weights)
+    near[complete] = False
+    for i, j in zip(*np.nonzero(near)):
+        support[i, j] = fsum(weights[valid_a[:, i] & valid_b[:, j]])
+
+
 def _get_weights(
     weights: SequenceWeightResult | np.ndarray | list[float] | None,
     n: int,
+    msa=None,
 ) -> np.ndarray:
     """validate one weight per aligned obs; zero weights exclude rows"""
 
     if isinstance(weights, SequenceWeightResult):
         if weights.n_observations != n:
             raise ValueError("weights must matched the number of aln obs")
+        if msa is not None:
+            verify_weight_alignment(msa,weights)
         weights = weights.weights
 
     if weights is None:
@@ -74,6 +112,9 @@ def _get_weights(
     if not np.isfinite(result).all() or np.any(result < 0) or not np.any (result > 0):
         raise ValueError("weights must be finite, nonnegative, and not all zero")
 
+    with np.errstate(over="ignore"):
+        if not np.isfinite(result.sum()):
+            raise ValueError("sum of weights exceeds the numeric range")
     return result
 
 
@@ -84,6 +125,7 @@ def _site_mi(
     q_y: int,
     weights: np.ndarray,
     min_valid: int,
+    min_valid_weight: float=0.0,
 ) -> tuple[float, int, float]:
     """calculate mi from joint obs only, renormalizing their weights"""
 
@@ -96,7 +138,8 @@ def _site_mi(
     n_valid = int(np.count_nonzero(valid))
     valid_weight = float(weights[valid].sum())
 
-    if n_valid < min_valid:
+    valid_weight = canonical_support_at_cutoff(valid_weight, valid, weights, min_valid_weight)
+    if n_valid < min_valid or valid_weight < min_valid_weight:
         return np.nan, n_valid, valid_weight
 
     # count weighted join states and normalize by pair specific weight
@@ -121,7 +164,9 @@ def weighted_mi(
     n_states_x: int,
     n_states_y: int,
     weights: SequenceWeightResult | np.ndarray | list[float] | None = None,
-    min_valid: int = 2
+    min_valid: int = 2,
+    *,
+    min_valid_weight: float = 0.0,
 ) -> float:
     """calculate weighted mi in bits for 2 encoded aln cols
     states >= n_states_x or n_states_y are excluded
@@ -131,6 +176,7 @@ def weighted_mi(
     x = np.asarray(x)
     y = np.asarray(y)
     min_valid = _check_min_valid(min_valid)
+    min_valid_weight = check_min_valid_weight(min_valid_weight)
 
     if x.ndim != 1 or y.ndim != 1 or x.shape != y.shape:
         raise ValueError("encoded cols must be 1d and equal in length")
@@ -142,7 +188,7 @@ def weighted_mi(
             raise ValueError(f"{name} must be a positive int")
 
     row_weights = _get_weights(weights, x.size)
-    return _site_mi(x, y, int(n_states_x), int(n_states_y), row_weights, min_valid)[0]
+    return _site_mi(x, y, int(n_states_x), int(n_states_y), row_weights, min_valid,min_valid_weight)[0]
 
 
 def apc(scores: np.ndarray) -> np.ndarray:
@@ -230,6 +276,7 @@ def mutual_information_block(
     *,
     include_gaps: bool = False,
     min_valid: int = 2,
+    min_valid_weight: float = 0.0,
     kernel: MIKernel = "batched",
 ) -> MIBlock:
     """calculate per col mi for two already row matched msas
@@ -247,6 +294,7 @@ def mutual_information_block(
     if kernel not in ("batched", "v1_scalar"):
         raise ValueError("MI kernel must be batched or v1_scalar")
     min_valid = _check_min_valid(min_valid)
+    min_valid_weight = check_min_valid_weight(min_valid_weight)
     row_weights = _get_weights(weights, a.n_sequences)
     q_a = len(CANONICAL[a.molecule]) + int(include_gaps)
     q_b = len(CANONICAL[b.molecule]) + int(include_gaps)
@@ -261,10 +309,20 @@ def mutual_information_block(
         for i in range(a.n_sites):
             for j in range(b.n_sites):
                 mi[i, j], n_valid[i, j], valid_weight[i, j] = _site_mi(
-                    a.matrix[:, i], b.matrix[:, j], q_a, q_b, row_weights, min_valid,
+                    a.matrix[:, i], b.matrix[:, j], q_a, q_b, row_weights, min_valid,min_valid_weight,
                 )
     else:
         _batched_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weight)
+
+        if min_valid_weight:
+            _pair_support_at_cutoff(
+                valid_weight,
+                (a.matrix >= 0) & (a.matrix < q_a),
+                (b.matrix >= 0) & (b.matrix < q_b),
+                row_weights,
+                min_valid_weight,
+            )
+            mi[valid_weight < min_valid_weight] = np.nan
 
     mi_apc = apc(mi)
 
@@ -286,6 +344,7 @@ def triplet_mi(
     *,
     include_gaps: bool = False,
     min_valid: int = 2,
+    min_valid_weight: float = 0.0,
     kernel: MIKernel = "batched",
 ) -> TripletMI:
     """calculate ab/ac/bc mi on the same synced triplet obs"""
@@ -295,15 +354,15 @@ def triplet_mi(
     if isinstance(weights, SequenceWeightResult) and weights.components != ("A", "B", "C"):
         raise ValueError("triplet weights must come from all three comps")
 
-    row_weights = _get_weights(weights, msa.n_observations)
+    row_weights = _get_weights(weights, msa.n_observations,msa)
     ab = mutual_information_block(
-        msa.a, msa.b, row_weights, include_gaps=include_gaps, min_valid=min_valid, kernel=kernel
+        msa.a, msa.b, row_weights, include_gaps=include_gaps, min_valid=min_valid, min_valid_weight=min_valid_weight, kernel=kernel
     )
     ac = mutual_information_block(
-        msa.a, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid, kernel=kernel
+        msa.a, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid, min_valid_weight=min_valid_weight, kernel=kernel
     )
     bc = mutual_information_block(
-        msa.b, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid, kernel=kernel
+        msa.b, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid, min_valid_weight=min_valid_weight, kernel=kernel
     )
 
     return TripletMI(
@@ -315,4 +374,5 @@ def triplet_mi(
         include_gaps=include_gaps,
         min_valid=min_valid,
         kernel=kernel,
+        min_valid_weight=check_min_valid_weight(min_valid_weight),
     )

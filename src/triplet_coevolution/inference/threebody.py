@@ -8,7 +8,12 @@ import numpy as np
 
 from triplet_coevolution.core.alignment import MatchedTripletMSA
 from triplet_coevolution.core.alphabets import CANONICAL
-from triplet_coevolution.inference.mi import _check_min_valid, _get_weights
+from triplet_coevolution.inference.mi import (
+    _check_min_valid,
+    _get_weights,
+    canonical_support_at_cutoff,
+    check_min_valid_weight,
+)
 
 
 @dataclass(frozen=True)
@@ -50,12 +55,14 @@ def fit_triples(
     *,
     pseudocount: float = 0.5,
     min_valid: int = 2,
+    min_valid_weight: float = 0.0,
 ) -> list[TripleScore]:
     """Fit a smoothed saturated log-linear model to each selected ABC marginal."""
     if not np.isfinite(pseudocount) or pseudocount <= 0:
         raise ValueError("three-body pseudocount must be finite and positive")
     min_valid = _check_min_valid(min_valid)
-    w = _get_weights(weights, msa.n_observations)
+    min_valid_weight = check_min_valid_weight(min_valid_weight)
+    w = _get_weights(weights, msa.n_observations,msa)
     matrices = tuple(c.matrix for c in msa.components)
     alphabets = tuple(len(CANONICAL[c.molecule]) for c in msa.components)
     results = []
@@ -72,7 +79,7 @@ def fit_triples(
         for x, q in zip(columns, alphabets):
             valid &= (x >= 0) & (x < q)
         n = int(valid.sum())
-        weight = float(w[valid].sum())
+        weight = canonical_support_at_cutoff(float(w[valid].sum()),valid,w,min_valid_weight)
         if n == 0:
             results.append(TripleScore(np.nan, np.nan, 0, 0.0, 0, 0))
             continue
@@ -81,7 +88,7 @@ def fit_triples(
         index = np.ravel_multi_index(recoded, shape)
         counts = np.bincount(index, weights=w[valid], minlength=prod(shape)).reshape(shape)
         observed = int(np.count_nonzero(counts))
-        if n < min_valid:
+        if n < min_valid or weight < min_valid_weight:
             results.append(TripleScore(np.nan, np.nan, n, weight, observed, counts.size))
             continue
 

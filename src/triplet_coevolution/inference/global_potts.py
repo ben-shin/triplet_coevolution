@@ -7,7 +7,12 @@ from math import prod
 import numpy as np
 
 from triplet_coevolution.core.alphabets import CANONICAL
-from triplet_coevolution.inference.mi import _check_min_valid, _get_weights
+from triplet_coevolution.inference.mi import (
+    _check_min_valid,
+    _get_weights,
+    canonical_support_at_cutoff,
+    check_min_valid_weight,
+)
 from triplet_coevolution.inference.threebody import TripleScore, fit_triples
 
 
@@ -109,22 +114,23 @@ def _fit(design, dimensions, terms, weights, l2):
     raise ValueError("global Potts fit did not converge in 500 iterations; increase global_l2")
 
 
-def global_triples(msa, candidates, weights=None, *, l2=0.1, min_valid=2):
+def global_triples(msa, candidates, weights=None, *, l2=0.1, min_valid=2, min_valid_weight=0.0):
     """Jointly fit selected ABC terms conditional on all retained variable sites."""
     if not np.isfinite(l2) or l2 <= 0:
         raise ValueError("global_l2 must be finite and positive")
     min_valid = _check_min_valid(min_valid)
-    w = _get_weights(weights, msa.n_observations)
+    min_valid_weight = check_min_valid_weight(min_valid_weight)
+    w = _get_weights(weights, msa.n_observations,msa)
     valid = w > 0
     for comp in msa.components:
         q = len(CANONICAL[comp.molecule])
         valid &= np.all((comp.matrix >= 0) & (comp.matrix < q), axis=1)
     n = int(valid.sum())
-    weight = float(w[valid].sum())
+    weight = canonical_support_at_cutoff(float(w[valid].sum()),valid,w,min_valid_weight)
     info = {"complete_observations": n, "complete_weight": weight}
-    if n < min_valid:
+    if n < min_valid or weight < min_valid_weight:
         unavailable = TripleScore(np.nan, np.nan, n, weight, 0, 0)
-        return [unavailable] * len(candidates), {**info, "status": "insufficient complete rows"}
+        return [unavailable] * len(candidates), {**info, "status": "insufficient complete rows" if n < min_valid else "insufficient complete weight"}
 
     site_index = {}
     design = []
@@ -149,7 +155,7 @@ def global_triples(msa, candidates, weights=None, *, l2=0.1, min_valid=2):
     terms.extend(t for t in triple_terms if t is not None)
     fitted, convergence = _fit(design, dimensions, terms, w[valid], l2)
     # Descriptive co-information and support use the same complete rows as the fit.
-    counts = fit_triples(msa, candidates, np.where(valid, w, 0), min_valid=min_valid)
+    counts = fit_triples(msa, candidates, np.where(valid, w, 0), min_valid=min_valid, min_valid_weight=min_valid_weight)
     scores = [
         replace(s, threebody_rms=float(np.sqrt(np.mean(fitted[t] ** 2))) if t else 0.0)
         for t, s in zip(triple_terms, counts)
