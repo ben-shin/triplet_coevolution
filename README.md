@@ -94,12 +94,14 @@ Each observation and each component ID must occur once in its respective column.
 | `report.html` | Offline report with alignment composition, leading sites, model and benchmark results, settings and links to the full outputs. |
 | `network.graphml` | Site network for graph viewers such as Cytoscape. Includes up to 25 results per exported ranking. Each scored triple is a separate node with three membership links. |
 | `dca_*.tsv`, `threebody_abc.tsv` | With the corresponding model enabled, ranked pair couplings or three-site Potts scores and signed co-information, with coordinates and observation support. |
+| `scores/score_manifest.json`, `scores/pair_scores.npz` | Complete fitted pair scores with reference maps, support, model provenance and checksums. |
+| `benchmark.json` | With contact labels, comparisons on common labeled pairs for each statistic and interface, curves, top-K retrieval, uncertainty status and coverage. |
 | `permutation_*.tsv`, `contacts.json` | With benchmarks enabled, empirical p-values and BH-adjusted values, or performance against supplied positive and negative reference contacts. |
 | `figures/*.png` | With `--plots`, one heatmap per component pair and a combined view. |
 
 All table coordinates start at 1. For example, `x_col` is the position in the filtered alignment, `x_original_col` is its original alignment column and `x_reference_pos` counts non-gap residues in the chosen reference. The `y_` fields describe the second component. A gap in the reference leaves its reference position blank. Use `--require-reference` to omit such rows, and `--a-start`, `--b-start` or `--c-start` to set the first occupied reference position.
 
-By default, each table contains up to 1,000 pairs ranked by `mi_apc`. Use `--score mi_bits` to rank by raw MI, `--fmt csv` for comma-separated tables or `--max-pairs` to change the per-table limit. A header-only table means no pair passed the selected criteria. See `triplet analyze --help` for all options.
+By default the ranked tables contain up to 1,000 pairs per interface. MI uses `mi_apc`, DCA uses `dca_apc` and three-site fits use `threebody_rms`. Use `--all-pairs` for a complete ranked export, or `--legacy` for v1.0 numerical settings and raw DCA ranking. A header-only table means no pair passed the selected criteria. The [score archive and migration guide](docs/scores-and-benchmarks.md) shows how to use `triplet benchmark`, `triplet export` and `triplet report` on saved results.
 
 ## How scores are calculated
 

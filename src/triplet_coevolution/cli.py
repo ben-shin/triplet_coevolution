@@ -7,6 +7,7 @@ import math
 import shutil
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -16,6 +17,7 @@ from triplet_coevolution import __version__
 from triplet_coevolution.core.coordinates import build_reference_map, subset_reference_map
 from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
+from triplet_coevolution.inference.scores import get_score, mi_with_apc_policy, pair_coverage
 from triplet_coevolution.inference.weights import sequence_weights
 from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.export import write_triplet_mi_tables
@@ -24,8 +26,11 @@ from triplet_coevolution.msa.masking import apply_triplet_masks
 from triplet_coevolution.msa.qc import triplet_qc
 from triplet_coevolution.msa.support import MissingRowSupport, retained_sites, site_masks
 from triplet_coevolution.msa.synchronize import synchronize
+from triplet_coevolution.provenance import file_hashes
 from triplet_coevolution.reporting.html import write_report
 from triplet_coevolution.reporting.network import ranked_tables, write_network
+from triplet_coevolution.score_commands import benchmark, export, report
+from triplet_coevolution.score_views import save_analysis_store
 from triplet_coevolution.workflow import prepare, run
 
 app = typer.Typer(
@@ -38,6 +43,9 @@ SUMMARY_NAME = "run_summary.json"
 app.command("prepare")(prepare)
 app.command("run")(run)
 app.command("evidence")(evidence)
+app.command("benchmark")(benchmark)
+app.command("export")(export)
+app.command("report")(report)
 
 
 def _show_version(value: bool) -> None:
@@ -91,11 +99,11 @@ def _stage_run(out: Path) -> Iterator[Path]:
             yield stage
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
-                final_manifest = stage / "workflow_summary.json"
-                if not final_manifest.exists():
-                    final_manifest = stage / SUMMARY_NAME
+                marker_names = ("workflow_summary.json", SUMMARY_NAME, "view_summary.json",
+                                "benchmark.json", "score_manifest.json")
+                final_manifest = next((stage / name for name in marker_names if (stage / name).exists()), None)
                 artifacts = sorted(
-                    stage.rglob("*"), key=lambda p: (p == final_manifest, p.name == SUMMARY_NAME, p)
+                    stage.rglob("*"), key=lambda p: (p == final_manifest, p.name in marker_names, p)
                 )
                 for artifact in artifacts:
                     target = out / artifact.relative_to(stage)
@@ -230,7 +238,8 @@ def analyze(
         str, typer.Option("--threebody-model", help="Three-body fit: local or global.")
     ] = "local",
     global_l2: Annotated[
-        float, typer.Option("--global-l2", help="Positive regularization for global three-body fit.")
+        float,
+        typer.Option("--global-l2", help="Positive regularization for global three-body fit."),
     ] = 0.1,
     ridge: Annotated[float, typer.Option("--ridge", help="Positive DCA ridge penalty.")] = 0.1,
     pseudocount: Annotated[
@@ -243,7 +252,8 @@ def analyze(
         Path | None, typer.Option("--triplet-candidates", help="TSV of candidate ABC site triples.")
     ] = None,
     permutations: Annotated[
-        int, typer.Option("--permutations", help="Null replicates for empirical tests (0 disables).")
+        int,
+        typer.Option("--permutations", help="Null replicates for empirical tests (0 disables)."),
     ] = 0,
     seed: Annotated[int, typer.Option("--seed", help="Random seed for permutation tests.")] = 0,
     strata_column: Annotated[
@@ -254,23 +264,103 @@ def analyze(
         Path | None, typer.Option("--contacts", help="Reference-coordinate contact labels TSV.")
     ] = None,
     a_ref_row: Annotated[
-        str | None, typer.Option("--a-ref-row", help="Coordinate row in A if different from --a-ref.")
+        str | None,
+        typer.Option("--a-ref-row", help="Coordinate row in A if different from --a-ref."),
     ] = None,
     b_ref_row: Annotated[
-        str | None, typer.Option("--b-ref-row", help="Coordinate row in B if different from --b-ref.")
+        str | None,
+        typer.Option("--b-ref-row", help="Coordinate row in B if different from --b-ref."),
     ] = None,
     c_ref_row: Annotated[
-        str | None, typer.Option("--c-ref-row", help="Coordinate row in C if different from --c-ref.")
+        str | None,
+        typer.Option("--c-ref-row", help="Coordinate row in C if different from --c-ref."),
     ] = None,
-    a_strand: Annotated[str, typer.Option("--a-strand", help="Reference coordinate direction (+ or -).")] = "+",
-    b_strand: Annotated[str, typer.Option("--b-strand", help="Reference coordinate direction (+ or -).")] = "+",
-    c_strand: Annotated[str, typer.Option("--c-strand", help="Reference coordinate direction (+ or -).")] = "+",
+    a_strand: Annotated[
+        str, typer.Option("--a-strand", help="Reference coordinate direction (+ or -).")
+    ] = "+",
+    b_strand: Annotated[
+        str, typer.Option("--b-strand", help="Reference coordinate direction (+ or -).")
+    ] = "+",
+    c_strand: Annotated[
+        str, typer.Option("--c-strand", help="Reference coordinate direction (+ or -).")
+    ] = "+",
     site_panel: Annotated[
-        Path | None, typer.Option("--site-panel", help="TSV of component and 1-based original_column to intersect with quality masks.")
+        Path | None,
+        typer.Option(
+            "--site-panel",
+            help="TSV of component and 1-based original_column to intersect with quality masks.",
+        ),
+    ] = None,
+    dca_score: Annotated[
+        str | None,
+        typer.Option("--dca-score", help="Rank DCA by dca_apc (default) or dca_frobenius."),
+    ] = None,
+    threebody_score: Annotated[
+        str | None,
+        typer.Option(
+            "--threebody-score",
+            help="Rank by threebody_rms or signed co_information_bits (lower first).",
+        ),
+    ] = None,
+    apc_universe: Annotated[
+        str | None,
+        typer.Option(
+            "--apc-universe", help="Compute APC over retained sites or reference-numbered sites."
+        ),
+    ] = None,
+    legacy: Annotated[
+        bool,
+        typer.Option(
+            "--legacy", help="Use v1 raw DCA ranking, retained-site APC and three-body RMS."
+        ),
+    ] = False,
+    all_pairs: Annotated[
+        bool,
+        typer.Option("--all-pairs", help="Export every eligible finite pair in the ranked tables."),
+    ] = False,
+    benchmark_bootstrap: Annotated[
+        int,
+        typer.Option(
+            "--benchmark-bootstrap", help="Number of block bootstrap draws for the supplied labels."
+        ),
+    ] = 0,
+    benchmark_k: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--benchmark-k",
+            min=1,
+            help="Top-K contact-retrieval cutoffs. Repeat for multiple cutoffs.",
+        ),
     ] = None,
 ) -> None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     try:
+        started = datetime.now(UTC)
+        if legacy and (
+            dca_score not in (None, "dca_frobenius")
+            or threebody_score not in (None, "threebody_rms")
+            or apc_universe not in (None, "retained")
+        ):
+            raise ValueError("--legacy requires dca_frobenius, threebody_rms and retained APC")
+        if dca_score is not None and not dca:
+            raise ValueError("--dca-score requires --dca")
+        if threebody_score is not None and not threebody:
+            raise ValueError("--threebody-score requires --threebody")
+        dca_score = dca_score or ("dca_frobenius" if legacy else "dca_apc")
+        threebody_score = threebody_score or "threebody_rms"
+        apc_universe = apc_universe or "retained"
+        if apc_universe not in {"reference", "retained"}:
+            raise ValueError("--apc-universe must be retained or reference")
+        get_score(dca_score, "dca")
+        get_score(threebody_score, "threebody")
+        if all_pairs and max_pairs != 1000:
+            raise ValueError("choose one of --max-pairs and --all-pairs")
+        if benchmark_bootstrap < 0 or (benchmark_bootstrap and contacts is None):
+            raise ValueError("--benchmark-bootstrap requires labels and a nonnegative draw count")
+        if benchmark_k and (
+            contacts is None or any(type(k) is not int or k < 1 for k in benchmark_k)
+        ):
+            raise ValueError("--benchmark-k requires contact labels and positive integer cutoffs")
         if score not in {"mi_bits", "mi_apc"}:
             raise ValueError("--score must be mi_bits or mi_apc")
         if fmt not in {"csv", "tsv"}:
@@ -287,8 +377,11 @@ def analyze(
             raise ValueError("--threebody-model must be local or global")
         if threebody_model == "global" and not threebody:
             raise ValueError("--threebody-model global requires --threebody")
-        for name, value in (("--ridge", ridge), ("--global-l2", global_l2),
-                            ("--pseudocount", pseudocount)):
+        for name, value in (
+            ("--ridge", ridge),
+            ("--global-l2", global_l2),
+            ("--pseudocount", pseudocount),
+        ):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if not dca and ridge != 0.1:
@@ -304,7 +397,7 @@ def analyze(
 
         if plots:
             try:
-                from triplet_coevolution.reporting.plots import save_mi_plots
+                from triplet_coevolution.reporting.plots import save_dca_plot, save_mi_plots
             except ModuleNotFoundError as exc:
                 if exc.name == "matplotlib":
                     raise ValueError(
@@ -373,10 +466,13 @@ def analyze(
         )
         weighting_options = {"identity_threshold": identity_threshold, "min_overlap": min_overlap}
         weights = sequence_weights(filtered.msa, **weighting_options)
-        result = triplet_mi(filtered.msa, weights=weights, min_valid=min_valid)
+        mi_kernel = "v1_scalar" if legacy else "batched"
+        result = mi_with_apc_policy(
+            triplet_mi(filtered.msa, weights=weights, min_valid=min_valid, kernel=mi_kernel), maps, apc_universe
+        )
         table_options = {
             "score": score,
-            "max_pairs": max_pairs,
+            "max_pairs": None if all_pairs else max_pairs,
             "min_valid": min_valid,
             "require_reference": require_reference,
             "fmt": fmt,
@@ -384,6 +480,11 @@ def analyze(
         with _stage_run(out) as stage:
             tables = write_triplet_mi_tables(stage, result, *maps, **table_options)
             advanced = {}
+            observed_dca = {}
+
+            def collect_observed(_observed_mi, blocks):
+                observed_dca.update(blocks or {})
+
             if dca or threebody or permutations or contacts is not None:
                 from triplet_coevolution.inference.advanced import write_advanced_results
 
@@ -392,8 +493,9 @@ def analyze(
                     ridge=ridge, pseudocount=pseudocount, max_triplets=max_triplets,
                     threebody_model=threebody_model, global_l2=global_l2,
                     triplet_candidates=paths.get("triplet_candidates"), permutations=permutations,
-                    seed=seed, strata=strata, contacts=paths.get("contacts"),
-                    mi_result=result, **table_options,
+                    seed=seed, strata=strata, contacts=paths.get("contacts") if legacy else None,
+                    mi_result=result, dca_score=dca_score, threebody_score=threebody_score,
+                    apc_universe=apc_universe, score_sink=collect_observed, **table_options,
                 )
                 for key in ("triplet_candidates", "contacts"):
                     if key in paths and _file_stamp(paths[key]) != stamps[key]:
@@ -403,8 +505,12 @@ def analyze(
                 if plots
                 else {}
             )
+            if plots and observed_dca:
+                figures["dca"] = save_dca_plot(
+                    stage / "figures", observed_dca, maps, score=dca_score, min_valid=min_valid
+                )
             summary = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "software_version": __version__,
                 "inputs": inputs,
                 "components": {
@@ -422,7 +528,9 @@ def analyze(
                         "mean_gap_fraction": stats.mean_gap_fraction,
                         "mean_missing_fraction": stats.mean_missing_fraction,
                     }
-                    for component, mapping, stats, row_id in zip(original, maps, qc.components, coordinate_rows)
+                    for component, mapping, stats, row_id in zip(
+                        original, maps, qc.components, coordinate_rows
+                    )
                 },
                 "settings": {**mask_options, **weighting_options, **table_options, "plots": plots},
                 "matched_observations": matched.n_observations,
@@ -434,7 +542,7 @@ def analyze(
                         for name, path in tables.items()
                     },
                     "figures": {
-                        ("triplet" if name == "triplet" else name.upper()): path.relative_to(
+                        (name if name in ("triplet", "dca") else name.upper()): path.relative_to(
                             stage
                         ).as_posix()
                         for name, path in figures.items()
@@ -443,10 +551,73 @@ def analyze(
             }
             if advanced:
                 advanced["settings"]["strata_column"] = strata_column
+            selected = [
+                score,
+                *([dca_score] if dca else []),
+                *([threebody_score] if threebody else []),
+            ]
+            summary["ranking"] = {
+                "legacy": legacy,
+                "apc_universe": apc_universe,
+                "mi_kernel": mi_kernel,
+                "statistics": [
+                    get_score(name).metadata(
+                        apc_universe=apc_universe, threebody_model=threebody_model
+                    )
+                    for name in selected
+                ],
+                "mi": score,
+                "dca": dca_score if dca else None,
+                "threebody": threebody_score if threebody else None,
+                "mi_coverage": {
+                    x.component + y.component: pair_coverage(
+                        block,
+                        x,
+                        y,
+                        score,
+                        require_reference=require_reference,
+                        min_valid=min_valid,
+                        max_pairs=table_options["max_pairs"],
+                        apc_universe=apc_universe,
+                    )
+                    for block, x, y in (
+                        (result.ab, maps[0], maps[1]),
+                        (result.ac, maps[0], maps[2]),
+                        (result.bc, maps[1], maps[2]),
+                    )
+                },
+            }
+            save_analysis_store(
+                stage,
+                summary,
+                maps,
+                result,
+                observed_dca,
+                observation_ids=[row.observation_id for row in matched.matches],
+                labels=paths.get("contacts"),
+                bootstrap=benchmark_bootstrap,
+                seed=seed,
+                top_k=benchmark_k or [10, 25, 50, 100],
+            )
             ranked = ranked_tables(summary)
+            if plots and threebody:
+                from triplet_coevolution.reporting.plots import save_triple_plot
+
+                triple_table = next(table for table in ranked if table.label == "ABC")
+                triple_plot = save_triple_plot(stage, triple_table)
+                summary["outputs"]["figures"]["threebody"] = triple_plot.relative_to(
+                    stage
+                ).as_posix()
             summary["outputs"]["network"] = write_network(stage, ranked)
             summary["outputs"]["report"] = "report.html"
             write_report(stage, summary, ranked)
+            ended = datetime.now(UTC)
+            summary["runtime"] = {
+                "start_utc": started.isoformat(),
+                "end_utc": ended.isoformat(),
+                "elapsed_seconds": (ended - started).total_seconds(),
+            }
+            summary["artifact_sha256"] = file_hashes(stage)
             (stage / SUMMARY_NAME).write_text(
                 json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
                 encoding="utf-8",

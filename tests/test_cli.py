@@ -139,7 +139,7 @@ def test_summary_records_provenance_and_masking(inputs):
   ])
   assert result.exit_code == 0, result.output
   summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
-  assert summary["schema_version"] == 1
+  assert summary["schema_version"] == 2
   assert summary["software_version"] == __version__
   for label, path in zip(("A", "B", "C", "matches"), (a, b, c, matches)):
     assert summary["inputs"][label] == {
@@ -354,11 +354,11 @@ def test_plot_dependency_error_names_install_extra(inputs, monkeypatch):
 def test_rerun_preserves_prior_results(inputs):
   *_, out, args = inputs
   assert runner.invoke(app, args).exit_code == 0
-  previous = {path.name: path.read_bytes() for path in out.iterdir()}
+  previous = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
   result = runner.invoke(app, args + ["--fmt", "csv"])
   assert result.exit_code == 1
   assert "new --out" in result.output
-  assert {path.name: path.read_bytes() for path in out.iterdir()} == previous
+  assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == previous
 
 
 @pytest.mark.parametrize("target", ["input_file", "input_directory", "existing_output_file"])

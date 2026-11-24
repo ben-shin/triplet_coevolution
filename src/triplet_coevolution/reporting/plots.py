@@ -49,8 +49,12 @@ def _score_data(
     if np.asarray(getattr(block, name)).shape != shape:
       raise ValueError(f"{name} shape doesnt match ref maps")
 
-  if block.n_valid.dtype.kind not in "iu" or np.any(block.n_valid < 0):
-    raise ValueError("n_valid must contain nonnegative ints")
+  unknown_support = (
+    (block.n_valid == -1) & np.isnan(block.mi_bits) & np.isnan(block.mi_apc)
+    & np.isnan(block.valid_weight)
+  )
+  if block.n_valid.dtype.kind not in "iu" or np.any((block.n_valid < 0) & ~unknown_support):
+    raise ValueError("n_valid must contain nonnegative ints or a verified unknown-support cell")
 
   data = np.asarray(getattr(block, score), dtype=float).copy()
 
@@ -240,53 +244,153 @@ def save_mi_plots(
   fmt: str = "png",
   dpi: int = 200,
 ) -> dict[str, Path]:
-  """save ab ac bc and combined heatmaps then close figs"""
+    """save ab ac bc and combined heatmaps then close figs"""
 
-  _check_options(score, min_valid, max_ticks)
+    _check_options(score, min_valid, max_ticks)
 
-  if fmt not in {"png", "pdf", "svg"}:
-    raise ValueError("fmt must be png, pdf, or svg")
+    if fmt not in {"png", "pdf", "svg"}:
+        raise ValueError("fmt must be png, pdf, or svg")
 
-  if isinstance(dpi, bool) or not isinstance(dpi, Integral) or dpi < 1:
-    raise ValueError("dpi must be a positive int")
+    if isinstance(dpi, bool) or not isinstance(dpi, Integral) or dpi < 1:
+        raise ValueError("dpi must be a positive int")
 
-  if not isinstance(result, TripletMI):
-    raise TypeError("result must be TripletMI")
+    if not isinstance(result, TripletMI):
+        raise TypeError("result must be TripletMI")
 
-  blocks = (
-    ("ab", result.ab, a_map, b_map),
-    ("ac", result.ac, a_map, c_map),
-    ("bc", result.bc, b_map, c_map),
-  )
-
-  # validate all score matrices before creating output files
-  for _, block, x_map, y_map in blocks:
-    _score_data(block, x_map, y_map, score, min_valid)
-
-  out_dir = Path(out_dir).expanduser()
-  out_dir.mkdir(parents=True, exist_ok=True)
-  saved = {}
-
-  for name, block, x_map, y_map in blocks:
-    fig, _ = plot_mi_block(
-      block, x_map, y_map, score=score, min_valid=min_valid, max_ticks=max_ticks,
+    blocks = (
+        ("ab", result.ab, a_map, b_map),
+        ("ac", result.ac, a_map, c_map),
+        ("bc", result.bc, b_map, c_map),
     )
-    path = out_dir / f"{score}_{name}.{fmt}"
+
+    # validate all score matrices before creating output files
+    for _, block, x_map, y_map in blocks:
+        _score_data(block, x_map, y_map, score, min_valid)
+
+    out_dir = Path(out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = {}
+
+    for name, block, x_map, y_map in blocks:
+        fig, _ = plot_mi_block(
+            block,
+            x_map,
+            y_map,
+            score=score,
+            min_valid=min_valid,
+            max_ticks=max_ticks,
+        )
+        path = out_dir / f"{score}_{name}.{fmt}"
+        try:
+            fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        finally:
+            plt.close(fig)
+        saved[name] = path
+
+    fig, _ = plot_triplet_mi(
+        result,
+        a_map,
+        b_map,
+        c_map,
+        score=score,
+        min_valid=min_valid,
+        max_ticks=max_ticks,
+    )
+    path = out_dir / f"{score}_triplet.{fmt}"
     try:
-      fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
     finally:
-      plt.close(fig)
-    saved[name] = path
+        plt.close(fig)
+    saved["triplet"] = path
 
-  fig, _ = plot_triplet_mi(
-    result, a_map, b_map, c_map,
-    score=score, min_valid=min_valid, max_ticks=max_ticks,
-  )
-  path = out_dir / f"{score}_triplet.{fmt}"
-  try:
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
-  finally:
-    plt.close(fig)
-  saved["triplet"] = path
+    return saved
 
-  return saved
+
+def save_dca_plot(
+    out_dir: Path,
+    blocks: dict,
+    maps: tuple[ReferenceCoordinates, ...],
+    *,
+    score: str,
+    min_valid: int,
+) -> Path:
+    """Render all three DCA blocks on a shared scale in the selected statistic's units."""
+    from triplet_coevolution.inference.scores import get_score
+
+    spec = get_score(score, "dca")
+    axes_by_name = {mapping.component: mapping for mapping in maps}
+    matrices = []
+    for pair in ("AB", "AC", "BC"):
+        block = blocks[pair]
+        values = np.where(block.n_valid >= min_valid, spec.values(block), np.nan)
+        matrices.append(values)
+    finite = [np.abs(values[np.isfinite(values)]) for values in matrices]
+    largest = max((float(np.max(values)) for values in finite if values.size), default=1.0) or 1.0
+    signed = spec.correction == "APC"
+    cmap = plt.get_cmap("RdBu_r" if signed else "viridis").with_extremes(bad="#cecece")
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    path = out_dir / f"{score}_triplet.png"
+    try:
+        for axis, pair, values in zip(axes, ("AB", "AC", "BC"), matrices, strict=True):
+            x, y = (axes_by_name[name] for name in pair)
+            image = axis.imshow(
+                np.ma.masked_invalid(values),
+                cmap=cmap,
+                vmin=-largest if signed else 0,
+                vmax=largest,
+                aspect="auto",
+                interpolation="nearest",
+                origin="upper",
+            )
+            axis.set_xticks(*_axis_ticks(y, 6), rotation=90)
+            axis.set_yticks(*_axis_ticks(x, 6))
+            axis.set(
+                xlabel=f"{pair[1]} · {y.reference_id}",
+                ylabel=f"{pair[0]} · {x.reference_id}",
+                title=f"{pair} {score}",
+            )
+        fig.colorbar(image, ax=axes, shrink=0.8, label=f"{score} ({spec.units})")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, dpi=180, bbox_inches="tight")
+    finally:
+        plt.close(fig)
+    return path
+
+
+def save_triple_plot(directory: Path, table, limit: int = 12) -> Path:
+    """Plot leading finite ABC candidates in their declared rank order."""
+    from triplet_coevolution.inference.scores import get_score
+
+    spec = get_score(table.score, "threebody")
+    rows = table.first_rows(directory, limit)
+    fig, axis = plt.subplots(figsize=(8, max(3, 1.2 + 0.37 * len(rows))))
+    path = directory / "figures" / f"{spec.name}_abc.png"
+    try:
+        if rows:
+            values = [float(row[spec.name]) for row in rows]
+            labels = [
+                " / ".join(
+                    row[key + "_reference_pos"] or "col" + row[key + "_original_col"]
+                    for key in ("a", "b", "c")
+                )
+                for row in rows
+            ]
+            axis.barh(
+                range(len(rows)), values, color=["#396d90" if v < 0 else "#9a4a24" for v in values]
+            )
+            axis.set_yticks(range(len(rows)), labels)
+            axis.invert_yaxis()
+        else:
+            axis.text(0.5, 0.5, "No finite candidate scores", transform=axis.transAxes, ha="center")
+        axis.axvline(0, color="#49545a", linewidth=0.8)
+        axis.set(
+            xlabel=f"{spec.name} ({spec.units})",
+            ylabel="A / B / C positions",
+            title=f"Leading tested triples · {spec.direction} first",
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
+        fig.savefig(path, dpi=160)
+    finally:
+        plt.close(fig)
+    return path

@@ -27,6 +27,10 @@ Repository = "https://github.com/ben-shin/triplet_coevolution"
 [tool.setuptools.dynamic]
 version = {attr = "triplet_coevolution.__version__"}
 
+[tool.setuptools.cmdclass]
+build_py = "_triplet_build.BuildPy"
+sdist = "_triplet_build.SourceDist"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["triplet_coevolution*"]

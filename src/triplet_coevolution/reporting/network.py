@@ -25,6 +25,7 @@ class RankedTable:
 def ranked_tables(summary: dict) -> list[RankedTable]:
     tables = []
     advanced = summary.get("advanced", {}).get("outputs", {})
+    selection = summary.get("ranking", {})
     for pair, meta in summary["outputs"]["tables"].items():
         tables.append(RankedTable(
             pair, "MI", meta["path"], summary["settings"]["score"], ("x", "y"), meta["rows"]
@@ -32,22 +33,27 @@ def ranked_tables(summary: dict) -> list[RankedTable]:
     for pair in ("AB", "AC", "BC"):
         if meta := advanced.get(f"dca_{pair.lower()}"):
             tables.append(RankedTable(
-                pair, "DCA", meta["path"], "dca_frobenius", ("x", "y"), meta["rows"]
+                pair, "DCA", meta["path"], selection.get("dca") or "dca_frobenius",
+                ("x", "y"), meta["rows"]
             ))
     if meta := advanced.get("threebody_abc"):
         tables.append(RankedTable(
-            "ABC", "Three-body Potts", meta["path"], "threebody_rms", ("a", "b", "c"), meta["rows"]
+            "ABC", "Three-body Potts", meta["path"], selection.get("threebody") or "threebody_rms",
+            ("a", "b", "c"), meta["rows"]
         ))
     return tables
 
 
 def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -> dict:
     """Keep the top entries of each ranking and represent triples with a factor node."""
+    from triplet_coevolution.inference.scores import get_score
+
     root = ET.Element("graphml", xmlns="http://graphml.graphdrawing.org/xmlns")
     keys = {
         "kind": "string", "component": "string", "original_column": "int",
         "reference_id": "string", "reference_position": "int", "label": "string",
         "method": "string", "score": "double", "rank": "int", "n_valid": "int",
+        "direction": "string", "units": "string", "competition_rank": "int",
     }
     for key, dtype in keys.items():
         ET.SubElement(root, "key", {
@@ -65,6 +71,7 @@ def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -
                 ET.SubElement(element, "data", key=key).text = text
 
     for table in tables:
+        spec = get_score(table.score)
         for row in table.first_rows(directory, limit):
             ids = []
             for prefix in table.prefixes:
@@ -83,6 +90,8 @@ def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -
             evidence = {
                 "method": table.score, "rank": row["rank"], "score": row[table.score],
                 "n_valid": row["n_valid"],
+                "direction": spec.direction, "units": spec.units,
+                "competition_rank": row.get("competition_rank", ""),
             }
             if len(ids) == 2:
                 edge = ET.SubElement(graph, "edge", source=ids[0], target=ids[1])

@@ -73,3 +73,20 @@ At 4,096 observations the sum of weights was 90.07435573143195. The ordered neig
 ### Legacy table replay and independent refit
 
 The owner subsequently supplied private alignments, cohort evidence, original scores on each of the 2,880 structural labels and the structure coordinates. The compact bundle passed its supplied checksums. Its original labeled scores reproduce the historical contact metrics. The frozen v1.0.0 refit produced pooled raw-MI average precision of 0.5630831846447628, compared with 0.5630838071254171 on the original scores. Six scores shared a near-zero raw-MI tie in the original data. Five shifted by one representable floating-point step during refitting. Noninterpolated AP depends on tied rank groups, including for scores indistinguishable at a coarser numeric tolerance. The replay retains the original tolerances and records this discrepancy. The private refit took 23.28 s with one BLAS thread and peaked at 464.50 MiB RSS. This comparison reuses supplied labels and a balanced set of distant controls. Independently verifying residue correspondence, distances and the complete observable universe belongs to Phase 2. [Legacy dataset manifest and replay instructions](../benchmarks/gatabc_manifest.json)
+
+## Phase 1 · Score selection, persistence and benchmarking
+
+Native `--dca` selects APC before top-K truncation. The same selected statistic determines the ranked TSV/CSV, graph edges, figure, report and null direction. The complete archive keeps all fitted pair statistics regardless of the display cap. Tests use a constructed matrix whose best corrected entry falls outside the raw top-K, a source-reference gap, mixed molecules, all-NaN scores, sparse v1 views, ties, signed co-information, tampered archives and held-out labels. The synthetic workflow executes one DCA fit. Existing ranks, benchmarks and reports can be regenerated after replacing the estimator with a call counter. The native and standalone benchmark files match byte for byte for identical inputs and settings.
+
+The owner’s prepared cohort yielded 888 matched rows, weight sum 505.49112803812943 and 315,492 reference-eligible pairs. The four-way comparison used the same 2,880 supplied labels. The table shows pooled AUROC / AP. [Historical protocol, checksums and refit commands](../benchmarks/gatabc-regression.md)
+
+| Statistic | Original archived labeled rows | New v1.0 scalar legacy mode | Default batched MI mode |
+|---|---|---|---|
+| MI bits | 0.503004678 / 0.563083807 | 0.503004678 / 0.563083185 | 0.503027344 / 0.563082688 |
+| MI/APC | 0.601581790 / 0.636672048 | 0.601581790 / 0.636672048 | 0.601589024 / 0.636674666 |
+| Raw DCA | 0.431892361 / 0.480900767 | 0.431892361 / 0.480900767 | 0.431892361 / 0.480900767 |
+| DCA/APC | 0.634399595 / 0.655387163 | 0.634399595 / 0.655387163 | 0.634399595 / 0.655387163 |
+
+Every one of the four legacy score values on every eligible pair matched the same-host v1.0.0 refit at binary64 precision. The existing batched MI kernel changes floating-point summation order. It can change near-tied ranks and metrics while keeping the same weighted MI definition. DCA values are unchanged. The new default exposes the already-computed corrected matrix when ranking. On this balanced label set, the default DCA/APC macro AUROC was 0.631678349 across AB/AC/BC. Contact recovery on this single cohort cannot establish independent improvement across systems or higher-order interactions.
+
+The v1-compatible native command used the settings in the regression guide with `--legacy --all-pairs`. It completed in 22.37 s with 440,340,480 bytes peak working set on the Phase 0 Windows machine, CPython 3.13.15 and one BLAS thread. This is one observed pre-release process timing with all six ranked tables, compressed score archive, benchmark and report. The earlier repeated synthetic timings are the controlled performance baseline. [Commands, outputs and uncertainty limits](scores-and-benchmarks.md)

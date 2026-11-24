@@ -8,6 +8,7 @@ from itertools import groupby
 from pathlib import Path
 from urllib.parse import quote
 
+from triplet_coevolution.inference.scores import get_score
 from triplet_coevolution.reporting.network import RankedTable, ranked_tables
 
 STYLE = """
@@ -68,14 +69,14 @@ def _site(row, prefix):
 
 METHODS = {
     "MI": "Mutual information captures statistical dependence. APC adjusts each component pair for background signal.",
-    "DCA": "Mean-field DCA estimates couplings conditional on the other alignment columns. Larger Frobenius norms rank first.",
-    "Three-body Potts": "Each candidate joins one site from each component. The score measures a three-site interaction after removing lower-order terms.",
+    "DCA": "Ridge mean-field DCA estimates couplings in a model of all retained alignment columns.",
+    "Three-body Potts": "Each tested candidate joins one site from each component. Local and conditional models have different interpretations.",
 }
 
 
-def _triple_evidence(directory: Path, triples: list[dict], pair_tables: dict):
+def _triple_evidence(directory: Path, triples: list[dict], pair_tables: dict, second_score: str):
     """Join the leading triples to the actual pairwise exports by original MSA columns."""
-    evidence = [[f'{float(row["co_information_bits"]):.5g}'] for row in triples]
+    evidence = [[f'{float(row[second_score]):.5g}'] for row in triples]
     for pair in ("AB", "AC", "BC"):
         keys = [(row[f"{pair[0].lower()}_original_col"], row[f"{pair[1].lower()}_original_col"])
                 for row in triples]
@@ -98,20 +99,23 @@ def _rankings(directory: Path, tables: list[RankedTable]) -> str:
         pieces.append(f'<div class="panel"><h3>{_text(method)}</h3><p>{METHODS[method]}</p>')
         for table in group:
             top = table.first_rows(directory, 5)
-            title = f"{table.label} · {table.rows:,} exported"
+            spec = get_score(table.score)
+            title = f"{table.label} · {table.score} · {spec.direction} first · {table.rows:,} exported"
             pieces.append(f"<details open><summary>{_text(title)}</summary>")
             if top:
                 headers = [*list(table.label), table.score, "Valid observations"]
                 rows = [[*[_site(row, k) for k in table.prefixes],
                          f"{float(row[table.score]):.5g}", row["n_valid"]] for row in top]
                 if table.label == "ABC":
-                    headers += ["Co-information (bits)", "AB MI (bits)", "AC MI (bits)", "BC MI (bits)"]
-                    for row, extra in zip(rows, _triple_evidence(directory, top, pair_tables)):
+                    second = "threebody_rms" if table.score == "co_information_bits" else "co_information_bits"
+                    heading = "Interaction RMS" if second == "threebody_rms" else "Co-information (bits)"
+                    headers += [heading, "AB MI (bits)", "AC MI (bits)", "BC MI (bits)"]
+                    for row, extra in zip(rows, _triple_evidence(directory, top, pair_tables, second)):
                         row.extend(extra)
                 pieces.append(_table(headers, rows, triple=table.label == "ABC"))
             else:
                 pieces.append("<p>No site combinations passed the selected filters.</p>")
-            pieces.append(_link(table.path, f"Open full {method} {table.label} table") + "</details>")
+            pieces.append(_link(table.path, f"Open exported {method} {table.label} table") + "</details>")
         pieces.append("</div>")
     return "".join(pieces)
 
@@ -168,6 +172,45 @@ def _benchmarks(directory: Path, advanced: dict) -> str:
     return "<p>No benchmarks were requested. Interpret the site rankings as descriptive associations.</p>"
 
 
+def benchmark_overview(result: dict) -> list[dict]:
+    """Retain compact display metrics while the complete curves stay in benchmark.json."""
+    rows = []
+    for name, methods in result["statistics"].items():
+        groups = {**methods["interfaces"], "Pooled": methods["pooled"], "Macro": methods["macro"]}
+        for group, metrics in groups.items():
+            rows.append({
+                "statistic": name, "scope": group, "auroc": metrics["auroc"],
+                "average_precision": metrics["average_precision"],
+                "common_labeled": metrics.get("coverage", {}).get("common_labeled"),
+            })
+    return rows
+
+
+def benchmark_section(rows: list[dict]) -> str:
+    """Describe common-label comparisons with their actual interface denominators."""
+    if not rows:
+        return ""
+    displayed = (
+        (r["statistic"], r["scope"], r["common_labeled"] if r["common_labeled"] is not None else "—",
+         *(f"{r[k]:.5g}" if r[k] is not None else "Unavailable" for k in ("auroc", "average_precision")))
+        for r in rows
+    )
+    return ("<h3>Contact prediction on common labeled pairs</h3>"
+            "<p>Macro values average interfaces with defined metrics. Unknown labels remain outside "
+            "the classification denominator. The full benchmark includes coverage, top-K, curves "
+            "and the status of uncertainty estimates.</p>"
+            + _table(["Statistic", "Interface", "Common labels", "AUROC", "Average precision"], displayed))
+
+
+def _refresh_report_hash(directory: Path, summary: dict) -> None:
+    if "artifact_sha256" in summary:
+        from triplet_coevolution.io.score_store import file_digest
+        summary["artifact_sha256"]["report.html"] = file_digest(directory / "report.html")
+        (directory / "run_summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
+        )
+
+
 def _workflow_section(workflow: dict, matching_qc: dict) -> str:
     searches = _table(["Component", "Search method", "Molecule", "Reference", "Retrieved hits"], (
         (name, component["backend"], component["molecule"], component["reference_id"], component["hits"])
@@ -196,6 +239,7 @@ def attach_workflow_report(directory: Path, workflow_summary: dict, matching_qc:
     summary = json.loads((directory / "run_summary.json").read_text(encoding="utf-8"))
     write_report(directory, summary, ranked_tables(summary),
                  workflow_section=_workflow_section(workflow_summary, matching_qc))
+    _refresh_report_hash(directory, summary)
 
 
 def row_support_section(workflow, prefix=""):
@@ -249,6 +293,7 @@ def attach_evidence_report(directory: Path, workflow: dict) -> None:
     )
     section += row_support_section(workflow, "../")
     write_report(directory, summary, ranked_tables(summary), workflow_section=section)
+    _refresh_report_hash(directory, summary)
 
 
 def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
@@ -284,6 +329,7 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
     files = [t.path for t in tables]
     files.extend(info["path"] for info in advanced.get("outputs", {}).values())
     files.extend([outputs["network"]["path"], "run_summary.json", *outputs["figures"].values()])
+    files.extend(outputs[key] for key in ("score_manifest", "score_payload", "benchmark") if key in outputs)
     links = "".join(f"<li>{_link(p, p)}</li>" for p in dict.fromkeys(files))
     picture = ""
     if combined := outputs["figures"].get("triplet"):
@@ -291,6 +337,14 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
         picture = ('<h3>Mutual information across component pairs</h3>'
                    f'<img alt="AB, AC and BC score heatmaps with a shared scale" '
                    f'src="data:image/png;base64,{payload}">')
+    if combined := outputs["figures"].get("dca"):
+        payload = base64.b64encode((directory / combined).read_bytes()).decode("ascii")
+        picture += (f'<h3>Direct coupling scores · {_text(summary["ranking"]["dca"])}</h3>'
+                    f'<img alt="All three DCA score matrices" src="data:image/png;base64,{payload}">')
+    if triple := outputs["figures"].get("threebody"):
+        payload = base64.b64encode((directory / triple).read_bytes()).decode("ascii")
+        picture += (f'<h3>Leading tested triples · {_text(summary["ranking"]["threebody"])}</h3>'
+                    f'<img alt="Leading signed or RMS ABC scores" src="data:image/png;base64,{payload}">')
     settings = _table(["Setting", "Value"], _definition_rows(summary["settings"]))
     if advanced.get("settings"):
         settings += _table(["Model or benchmark setting", "Value"], _definition_rows(advanced["settings"]))
@@ -320,7 +374,7 @@ Effective depth is the sum of redundancy weights. Reference positions and origin
 <section id="scores"><h2>Site rankings</h2><p>Up to five leading results per ranking.
 Shared ancestry, limited depth and indirect associations can influence every score.</p>
 {_rankings(directory, tables)}{coverage}{picture}</section>
-<section id="benchmarks"><h2>Signal benchmarks</h2>{_benchmarks(directory, advanced)}</section>
+<section id="benchmarks"><h2>Signal benchmarks</h2>{_benchmarks(directory, advanced)}{benchmark_section(summary.get("benchmark_overview", []))}</section>
 <section id="files"><h2>Files &amp; settings</h2><ul class="files">{links}</ul>
 <p>The GraphML network includes up to {outputs["network"]["limit_per_table"]} entries per ranking.
 Three-site interactions have their own nodes linked to each member site.</p>
