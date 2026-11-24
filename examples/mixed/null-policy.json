@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "null": "whole_component",
+  "statistics": ["mi_apc", "dca_apc"],
+  "family": "interface",
+  "draws": 19,
+  "planned_draws": 19,
+  "seed": 7,
+  "alpha": 0.05,
+  "max_t": true,
+  "workers": 1
+}

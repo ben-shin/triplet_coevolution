@@ -19,6 +19,7 @@ WeightPolicy = Literal[
     "cluster_representatives",
     "clade_balanced",
     "supplied",
+    "uniform",
 ]
 POLICIES = (
     "equal_component",
@@ -27,6 +28,7 @@ POLICIES = (
     "cluster_representatives",
     "clade_balanced",
     "supplied",
+    "uniform",
 )
 
 
@@ -103,6 +105,7 @@ _DEFINITIONS = {
     "concatenated": "Reciprocal self-inclusive neighbor count. Pool matched and jointly canonical site counts before taking their ratio; overlap is relative to the total concatenated length.",
     "cluster_representatives": "Connected components of the equal-component threshold graph (single linkage); lexicographically smallest observation ID has weight one, other members zero.",
     "clade_balanced": "Each supplied clade has total weight one, split equally among its observations.",
+    "uniform": "Each matched observation has fixed unit weight.",
     "supplied": "Nonnegative finite weights supplied by observation ID; the original design scale is retained.",
 }
 
@@ -197,7 +200,7 @@ def _workspace(parts, policy, memory_budget_bytes, reuse):
     block = cache = comparisons = pair_slots = word_slots = 0
     fixed = 64 * n
     peak = fixed
-    if policy not in ("supplied", "clade_balanced"):
+    if policy not in ("supplied", "clade_balanced", "uniform"):
         widths = [(c.n_sites + 63) // 64 for c in parts]
         packed = sum(
             8 * n * w * (1 + (len(CANONICAL[c.molecule]) - 1).bit_length())
@@ -455,6 +458,21 @@ def sequence_weights(
         raise ValueError("clades must be supplied exactly for the clade_balanced policy")
     if (supplied_weights is not None) != (policy == "supplied"):
         raise ValueError("supplied_weights must be supplied exactly for the supplied policy")
+    if policy == "uniform":
+        weights = np.ones(len(ids), dtype=float)
+        weights.setflags(write=False)
+        return SequenceWeightResult(
+            weights,
+            None,
+            float(len(ids)),
+            len(ids),
+            names,
+            identity_threshold,
+            min_overlap,
+            ids,
+            policy,
+            preflight=plan,
+        )
     if policy in ("clade_balanced", "supplied"):
         mapping = clades if policy == "clade_balanced" else supplied_weights
         if not isinstance(mapping, Mapping) or set(mapping) != set(ids):
@@ -508,7 +526,7 @@ def rematch_evaluator(msa, weights, strata, comparison_type=_WeightComparisons):
     if not isinstance(weights, SequenceWeightResult):
         raise TypeError("rematching requires declared sequence or observation-keyed weights")
     verify_weight_alignment(msa, weights)
-    if weights.policy in ("supplied", "clade_balanced"):
+    if weights.policy in ("supplied", "clade_balanced", "uniform"):
         if weights.policy == "clade_balanced":
             from triplet_coevolution.validation.phylogeny import exchangeability_groups
 

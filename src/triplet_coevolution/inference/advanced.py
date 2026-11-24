@@ -290,6 +290,7 @@ def write_advanced_results(
     if permutations:
         refit_weights = rematch_evaluator(msa, weights, strata, _WeightComparisons)
         null_weight_policy = {
+            "uniform": "fixed unit weights on matched observations",
             "supplied": "fixed observation design weights keyed to anchored A rows",
             "clade_balanced": "fixed clade weights within nested permutation strata",
         }.get(weights.policy, "recompute declared identity policy on rematched components")

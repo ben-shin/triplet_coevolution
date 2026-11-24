@@ -28,6 +28,7 @@ from triplet_coevolution.analysis_plan import (
     write_weighted_sites,
     write_weights,
 )
+from triplet_coevolution.calibration import calibrate
 from triplet_coevolution.core.coordinates import build_reference_map
 from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
@@ -59,6 +60,7 @@ app.command("evidence")(evidence)
 app.command("benchmark")(benchmark)
 app.command("export")(export)
 app.command("report")(report)
+app.command("calibrate")(calibrate)
 app.command("structure-map")(structure_map)
 app.command("contacts")(structure_map)
 
@@ -115,6 +117,7 @@ def _stage_run(out: Path) -> Iterator[Path]:
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
                 marker_names = (
+                    "calibration.json",
                     "structure_summary.json",
                     "workflow_summary.json",
                     SUMMARY_NAME,
@@ -389,7 +392,7 @@ def analyze(
         str,
         typer.Option(
             "--weight-policy",
-            help="equal_component, component, concatenated, cluster_representatives, clade_balanced, or supplied.",
+            help="equal_component, component, concatenated, cluster_representatives, clade_balanced, supplied, or uniform.",
         ),
     ] = "equal_component",
     weight_component: Annotated[
@@ -429,12 +432,17 @@ def analyze(
             help="Inspect inputs, QC and allocation estimates without fitting or permuting.",
         ),
     ] = False,
+    null_policy: Annotated[Path | None, typer.Option("--null-policy", help="Named null-model and registered-statistic calibration JSON.")] = None,
 ) -> dict | None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     options = locals().copy()
     try:
         from triplet_coevolution.msa.diagnostics import QCPolicy, inspect_qc, write_qc
+        from triplet_coevolution.validation.null_policy import NullPolicy, calibration_plan
 
+        named_null = NullPolicy.from_config(null_policy) if null_policy else None
+        if named_null and permutations:
+            raise ValueError("choose --null-policy or legacy --permutations for a native analysis")
         started = datetime.now(UTC)
         if not math.isfinite(min_valid_weight) or min_valid_weight < 0:
             raise ValueError("--min-valid-weight must be finite and nonnegative")
@@ -451,6 +459,7 @@ def analyze(
             "cluster_representatives",
             "clade_balanced",
             "supplied",
+            "uniform",
         }:
             raise ValueError("unknown weight policy")
         if (weight_policy == "component") != (weight_component is not None) or (
@@ -550,6 +559,7 @@ def analyze(
         for key, path in (
             ("candidate_policy", candidate_policy),
             ("local_policy", local_policy),
+            ("null_policy", null_policy),
             ("triplet_candidates", triplet_candidates),
             ("contacts", contacts),
             ("site_panel", site_panel),
@@ -694,6 +704,17 @@ def analyze(
             identity_threshold=identity_threshold,
             min_overlap=min_overlap,
         )
+        if named_null:
+            plan["calibration"] = calibration_plan(
+                named_null,
+                plan,
+                require_reference=require_reference,
+                apc_universe=apc_universe,
+                dca=dca,
+                threebody=threebody,
+                threebody_model=threebody_model,
+                weight_policy=weight_policy,
+            )
         plan["inputs"] = {k: {"sha256": v["sha256"]} for k, v in inputs.items()}
         plan["input_alignments"] = {
             m.name: {
@@ -972,6 +993,40 @@ def analyze(
                 seed=seed,
                 top_k=benchmark_k or [10, 25, 50, 100],
             )
+            if named_null:
+                from triplet_coevolution.calibration import _check_checkpoint, _write_calibration
+
+                _check_checkpoint(named_null, [out])
+                if _file_stamp(paths["null_policy"]) != stamps["null_policy"]:
+                    raise ValueError("null policy changed during analysis")
+                calibrated = _write_calibration(
+                    stage / "calibration",
+                    stage,
+                    named_null,
+                    summary=summary,
+                    live=(filtered.msa, weights, table),
+                )
+                triple_tests = [
+                    k for k in named_null.statistics if get_score(k).method == "threebody"
+                ]
+                if triple_tests:
+                    advanced["triple_calibration"] = {
+                        "status": calibrated["runner"]["status"],
+                        "null": named_null.null,
+                        "statistics": triple_tests,
+                        "draws": named_null.draws,
+                        "path": "calibration/calibration.json",
+                    }
+                    if advanced.get("local_fit"):
+                        advanced["local_fit"]["calibration"] = calibrated["question"]
+                summary["calibration"] = {
+                    "null": named_null.null,
+                    "status": calibrated["runner"]["status"],
+                    "draws": named_null.draws,
+                    "families": calibrated["families"],
+                }
+                summary["outputs"]["calibration"] = "calibration/calibration.json"
+                summary["outputs"]["calibration_report"] = "calibration/report.html"
             ranked = ranked_tables(summary)
             if plots and threebody:
                 from triplet_coevolution.reporting.plots import save_triple_plot

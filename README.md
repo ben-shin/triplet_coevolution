@@ -71,11 +71,13 @@ triplet analyze --a examples/mixed/protein.fasta --b examples/mixed/dna.fasta --
 
 Expect eight matched observations, an effective depth of 8.00 and 4, 4 and 3 retained columns in A, B and C. Protein alignment column 2 contains only gaps and is removed. In `mi_ab.tsv`, the first row pairs the first protein and DNA columns. They have 1 bit of raw MI across eight observations.
 
-Use the same arguments with `triplet plan` and a fresh `--out` directory to inspect the matched rows, column masks, candidate count and memory estimates before scoring. For configurable row and site exclusions, six weighting policies, effective support thresholds and exact replay, see the [analysis planning guide](docs/analysis-planning.md).
+Use the same arguments with `triplet plan` and a fresh `--out` directory to inspect the matched rows, column masks, candidate count and memory estimates before scoring. For configurable row and site exclusions, sequence-based and design-based weights, effective support thresholds and exact replay, see the [analysis planning guide](docs/analysis-planning.md).
 
 To add mean-field DCA, a three-body fit and stratification-free permutation tests, append `--dca --threebody --permutations 19 --seed 7` to the example and use `--out results/mixed-models`. Nineteen draws are enough to exercise the workflow, with limited p-value resolution. To generate PNG heatmaps, add `--plots` after installing the plotting extra.
 
 For a three-site comparison with the best-fitting pairwise maximum-entropy distribution, use `triplet local`. The [local analysis guide](docs/local-analysis.md) runs the mixed example across several prior strengths, explains connected information and shows how to declare and audit candidates.
+
+Use `triplet calibrate` to test individual scores from a saved analysis, or pass `--null-policy` while scoring. Each result identifies the null question, exchangeable observations, tested coordinates, achievable p-value resolution and completed draws. [Named nulls and checkpoint recovery](docs/calibration.md)
 
 ## Prepare your inputs
 

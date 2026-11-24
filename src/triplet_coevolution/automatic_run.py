@@ -65,7 +65,9 @@ def _plan(components, n, overrides, limits, plots):
     skipped = {}
     if "dca" not in overrides and not dca:
         skipped["dca"] = "Panel exceeds the automatic DCA size budget."
-    if "permutations" not in overrides and not draws:
+    if overrides.get("null_policy") and "permutations" not in overrides:
+        settings["permutations"] = 0
+    if "permutations" not in overrides and not draws and not overrides.get("null_policy"):
         skipped["permutations"] = "Panel exceeds the automatic permutation refit budget."
     if settings.get("plots"):
         try:
@@ -165,7 +167,7 @@ def _score(stage, out, summary, kwargs, settings, plan):
                 kwargs.update(revised)
                 settings.pop("site_panel", None)
                 continue
-            elif isinstance(cause, ValueError) and str(cause).startswith(
+            elif settings.get("permutations") and isinstance(cause, ValueError) and str(cause).startswith(
                 "the permutation null requires"
             ):
                 plan["skipped"]["permutations"] = str(cause)
