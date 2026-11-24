@@ -37,6 +37,8 @@ triplet run
 
 The command uses family and row annotations, cached records and public identifier lookups to find unambiguous matches in a shared genomic context. It determines the scoring molecules and coordinate representatives, then scores and benchmarks supported observations. It prints the path to an offline `report.html` under a fresh `results/run-…` directory, including when evidence is insufficient. No configuration or prompts are required. To keep the run entirely local, use `triplet run --offline`. The [automatic run guide](docs/automatic.md) covers the data needed for a match, public services, inference limits and batch exit codes. For strict preparation with explicitly supplied roles, see the [three-folder evidence guide](docs/families.md).
 
+Use `triplet doctor` to check available resources and local tools. Use `triplet run --input input --offline --work-dir results/jobs` to keep a verified matching snapshot and resume scoring. Configured workflows can stop after preparation, inspect the native resource plan, and reuse scores for independent benchmarks. [Local jobs and recovery](docs/local-runs.md) · [Distributed nulls and Slurm](docs/distributed-nulls.md)
+
 For a workflow starting with unaligned sequences, run the bundled database-search example from the repository root. Paths in its configuration are relative to the JSON file.
 
 ```shell

@@ -358,7 +358,7 @@ def _workflow(config, out, mode, plots=None):
     out = out.expanduser()
     _check_output(out)
     config_id = _provenance({"config": config})["config"]
-    cfg = load_config(config, mode)
+    cfg = load_config(config, "run" if mode == "discover" else mode)
     if plots is not None:
         cfg["analysis"]["plots"] = plots
     paths = _inputs(cfg, config)
@@ -366,7 +366,7 @@ def _workflow(config, out, mode, plots=None):
     if identities["config"] != config_id:
         raise ValueError("configuration changed while reading")
     with _stage_run(out) as stage:
-        if mode == "run":
+        if mode in ("run", "discover"):
             components, available, programs, discoveries, coordinate_rows = _run_searches(
                 stage, cfg
             )
@@ -405,7 +405,7 @@ def _workflow(config, out, mode, plots=None):
             "matching_qc": (prepared / "matching_qc.json").relative_to(stage).as_posix(),
             "analyze_args": (prepared / "analyze_args.json").relative_to(stage).as_posix(),
         }
-        if mode == "run":
+        if mode in ("run", "discover"):
             summary["search"] = {
                 name: {
                     **{k: v for k, v in cfg["components"][name].items() if not isinstance(v, Path)},
@@ -417,7 +417,9 @@ def _workflow(config, out, mode, plots=None):
                 }
                 for name in COMPONENTS
             }
-            if qc["ready_for_analysis"]:
+            if mode == "discover":
+                summary["status"] = "prepared" if qc["ready_for_analysis"] else "no_matches"
+            elif qc["ready_for_analysis"]:
                 from triplet_coevolution.reporting.html import attach_workflow_report
 
                 _analyze(stage, out, analysis_args)
@@ -458,10 +460,34 @@ def _workflow(config, out, mode, plots=None):
         typer.echo("No complete triplets. Inspect the matching QC for excluded candidates.")
 
 
-def prepare(config: ConfigOption, out: OutOption = Path("prepared")) -> None:
+def prepare(
+    config: ConfigOption,
+    out: OutOption = Path("prepared"),
+    *,
+    raw: Annotated[
+        bool, typer.Option("--raw", help="Discover raw hits and stop after matching.")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Validate inputs without search or inference.")
+    ] = False,
+    work_dir: Annotated[
+        Path | None, typer.Option("--work-dir", help="Reuse verified preparation artifacts.")
+    ] = None,
+) -> None:
     """Match three unpaired alignments using explicit genome or orthology evidence."""
     try:
-        _workflow(config, out, "prepare")
+        if work_dir is not None:
+            from triplet_coevolution.pipeline_commands import pipeline
+
+            if out != Path("prepared"):
+                raise ValueError("choose --work-dir or --out")
+            pipeline(config, work_dir, until="prepare", dry_run=dry_run)
+        elif dry_run:
+            from triplet_coevolution.pipeline_commands import validate_inputs
+
+            validate_inputs(config=config, out=out)
+        else:
+            _workflow(config, out, "discover" if raw else "prepare")
     except (ValueError, TypeError, OSError, csv.Error) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
@@ -493,6 +519,13 @@ def run(
             help="Allow identifier lookups (default) or use only local evidence and caches.",
         ),
     ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Validate inputs offline without search or inference.")
+    ] = False,
+    work_dir: Annotated[
+        Path | None,
+        typer.Option("--work-dir", help="Resume a configured pipeline in this directory."),
+    ] = None,
     cache_dir: Annotated[
         Path | None,
         typer.Option("--cache-dir", help="Directory for reusable public metadata snapshots."),
@@ -500,6 +533,45 @@ def run(
 ) -> None:
     """Match three families, score their alignments, benchmark and report without prompts."""
     try:
+        if dry_run and (work_dir is None or config is None):
+            from triplet_coevolution.pipeline_commands import validate_inputs
+
+            if config is not None and directory is not None:
+                raise ValueError("choose --config or --input")
+            validate_inputs(
+                config=config,
+                directory=directory if config else (directory or Path("input")),
+                out=out,
+            )
+            return
+        if work_dir is not None:
+            from triplet_coevolution.pipeline_commands import pipeline
+
+            if not config:
+                if out:
+                    raise ValueError("choose --work-dir or --out")
+                from triplet_coevolution.folder_stages import run_folder_stages
+
+                def show_stage(e):
+                    from triplet_coevolution.command_progress import quiet_mode
+
+                    if not quiet_mode.get() and e["event"] == "stage_finished":
+                        typer.echo(f"{e['stage']}: {e['action']}", err=True)
+
+                status, record, report = run_folder_stages(
+                    directory or Path("input"), work_dir, online, cache_dir, plots, show_stage
+                )
+                typer.echo(f"Report: {report}")
+                typer.echo(f"Workflow: {record}")
+                if status:
+                    raise typer.Exit(status)
+                return
+            if out or directory or online is not None or cache_dir or plots is not None:
+                raise ValueError(
+                    "--work-dir requires --config; use analysis settings in that config"
+                )
+            pipeline(config, work_dir, dry_run=dry_run)
+            return
         if config is not None:
             if directory is not None or online is not None or cache_dir is not None:
                 raise ValueError(

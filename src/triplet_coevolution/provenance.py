@@ -13,13 +13,19 @@ import numpy as np
 from triplet_coevolution._revision import ARCHIVE_COMMIT, BUILD_DIRTY, REVISION_SOURCE
 
 
-def software_identity() -> dict:
-    """Identify the installed code independently of the analysis working directory."""
+def package_code_digest():
+    """Hash the installed Python source independently of the current working directory."""
     package = Path(__file__).resolve().parent
     digest = hashlib.sha256()
     for path in sorted(package.rglob("*.py")):
         digest.update(path.relative_to(package).as_posix().encode() + b"\0")
         digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return digest.hexdigest()
+
+
+def software_identity() -> dict:
+    """Identify the installed source and key numerical libraries."""
+    package = Path(__file__).resolve().parent
     git = {"commit": None, "dirty": None, "source": "unavailable"}
     root = package.parent.parent
     if package.parent.name == "src" and (root / ".git").exists():
@@ -43,7 +49,7 @@ def software_identity() -> dict:
     blas = conf.get("Build Dependencies", {}).get("blas", {})
     return {
         "git": git,
-        "code_sha256": digest.hexdigest(),
+        "code_sha256": package_code_digest(),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "architecture": platform.machine(),

@@ -29,6 +29,7 @@ from triplet_coevolution.analysis_plan import (
 )
 from triplet_coevolution.calibration import calibrate
 from triplet_coevolution.clade_workflow import CladePolicy, split, stability
+from triplet_coevolution.command_progress import configure, event
 from triplet_coevolution.conditional_workflow import (
     conditional,
     conditional_design,
@@ -44,11 +45,13 @@ from triplet_coevolution.io.metadata import read_triplet_table
 from triplet_coevolution.io.selected_sources import InputBudgetError, matched_sources
 from triplet_coevolution.msa.support import site_masks
 from triplet_coevolution.msa.synchronize import synchronize
+from triplet_coevolution.pipeline_commands import doctor, pipeline, select, validate_inputs
 from triplet_coevolution.provenance import file_hashes
 from triplet_coevolution.reporting.html import write_report
 from triplet_coevolution.reporting.network import ranked_tables, write_network
 from triplet_coevolution.score_commands import benchmark, export, report
 from triplet_coevolution.score_views import save_analysis_store, write_json
+from triplet_coevolution.shard_commands import merge_null, null_shard, shard_plan, shard_status
 from triplet_coevolution.structure.workflow import structure_map
 from triplet_coevolution.workflow import prepare, run
 
@@ -60,6 +63,14 @@ app = typer.Typer(
 SUMMARY_NAME = "run_summary.json"
 
 app.command("prepare")(prepare)
+app.command("doctor")(doctor)
+app.command("validate-inputs")(validate_inputs)
+app.command("pipeline")(pipeline)
+app.command("select")(select)
+app.command("shard-plan")(shard_plan)
+app.command("null-shard")(null_shard)
+app.command("merge-null")(merge_null)
+app.command("shard-status")(shard_status)
 app.command("run")(run)
 app.command("evidence")(evidence)
 app.command("benchmark")(benchmark)
@@ -82,6 +93,19 @@ def _show_version(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
+    quiet: Annotated[
+        bool, typer.Option("--quiet", help="Suppress ordinary command output.")
+    ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Log command and publication progress on stderr.")
+    ] = False,
+    json_log: Annotated[
+        bool,
+        typer.Option(
+            "--json-log", help="Emit structured command and publication events on stderr."
+        ),
+    ] = False,
     version: Annotated[
         bool,
         typer.Option(
@@ -90,6 +114,7 @@ def main(
     ] = False,
 ) -> None:
     """Analyze coevolution in protein, DNA and RNA sequences."""
+    configure(ctx, quiet=quiet, verbose=verbose, json_log=json_log)
 
 
 def _check_output(out: Path) -> None:
@@ -122,10 +147,16 @@ def _stage_run(out: Path) -> Iterator[Path]:
                 raise ValueError(
                     f"output directory is not empty: {out}. Choose a new --out directory."
                 )
+            event("stage_started", output=str(out))
             yield stage
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
                 marker_names = (
+                    "shard_plan.json",
+                    "shard_receipt.json",
+                    "selection_receipt.json",
+                    "validation.json",
+                    "doctor.json",
                     "stability_summary.json",
                     "conditional_summary.json",
                     "dca_comparison.json",
@@ -155,9 +186,11 @@ def _stage_run(out: Path) -> Iterator[Path]:
                             rollback.callback(target.unlink)
                             shutil.copyfileobj(source, dest)
                 rollback.pop_all()
+                event("stage_published", output=str(out), files=sum(p.is_file() for p in artifacts))
         finally:
             shutil.rmtree(stage)
     except BaseException:
+        event("stage_failed", output=str(out))
         if created:
             # A concurrent writer may have claimed this destination.
             with suppress(OSError):

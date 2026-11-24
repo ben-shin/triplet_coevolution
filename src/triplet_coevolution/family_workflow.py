@@ -263,6 +263,7 @@ def _prepare(
     automatic=False,
     cache_directory=None,
     plots=None,
+    defer_scoring=False,
 ):
     from triplet_coevolution.cli import _check_output, _file_stamp, _input_identity, _stage_run
     from triplet_coevolution.evidence import EvidenceRow, generate_evidence
@@ -512,7 +513,19 @@ def _prepare(
                     save_snapshots(metadata, cache_directory)
                 except (ValueError, OSError, sqlite3.Error) as exc:
                     summary["cache_warning"] = str(exc)
-            finish_run(stage, out, summary, kwargs, cfg["analysis"], cfg["analysis_limits"], plots)
+            if defer_scoring:
+                # The published snapshot holds native coordinate arguments before scoring QC.
+                # Role-specific source files reside in prepared/, adjacent to this handoff.
+                base_args = {
+                    k: (v.relative_to(stage).as_posix() if isinstance(v, Path) else v)
+                    for k, v in kwargs.items()
+                    if k not in cfg["analysis"]
+                }
+                summary["deferred_analysis_inputs"] = base_args
+            else:
+                finish_run(
+                    stage, out, summary, kwargs, cfg["analysis"], cfg["analysis_limits"], plots
+                )
         elif not missing:
             _write_analysis_args(prepared, kwargs)
             summary["analyze_args"] = "prepared/analyze_args.json"
