@@ -336,7 +336,7 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
     files = [t.path for t in tables]
     files.extend(info["path"] for info in advanced.get("outputs", {}).values())
     files.extend([outputs["network"]["path"], "run_summary.json", *outputs["figures"].values()])
-    files.extend(outputs[key] for key in ("score_manifest", "score_payload", "benchmark", "calibration", "calibration_report") if key in outputs)
+    files.extend(outputs[key] for key in ("score_manifest", "score_payload", "benchmark", "calibration", "calibration_report", "stability", "stability_report") if key in outputs)
     files.extend(outputs[k] for k in ("weights", "plan", "replay") if k in outputs)
     files.extend(outputs.get("diagnostics", {}).values())
     links = "".join(f"<li>{_link(p, p)}</li>" for p in dict.fromkeys(files))
@@ -403,6 +403,8 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
             )
             + "</p>"
         )
+    if stable := summary.get("clade_stability"):
+        coverage += "<h3>Held-out clade stability</h3><p>" + _text(stable["groups"]) + " groups in " + _text(stable["folds"]) + " training/held-out splits. " + _link(outputs["stability_report"],"Fold ranks, coordinate support and resampling intervals") + "</p>"
     if named := summary.get("calibration"):
         coverage += "<h3>Named null calibration</h3><p>" + _text(named["null"]) + " · " + _text(named["status"]) + " · " + _text(named["draws"]) + " draws. " + _link(outputs["calibration_report"], "Hypotheses, attainable resolution and correction families") + "</p>"
     if (calibration := advanced.get("triple_calibration")) and calibration["status"] == "withheld":

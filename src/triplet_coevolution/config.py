@@ -41,6 +41,7 @@ ANALYSIS_TYPES = {
     "candidate_policy": Path,
     "local_policy": Path,
     "null_policy": Path,
+    "stability_policy": Path,
     "candidate_mode": str,
     "site_panel": Path,
     "permutations": int,

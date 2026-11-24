@@ -24,7 +24,7 @@ from triplet_coevolution.validation.pair_sampler import fit_pair_panel
 
 
 class CalibrationModel:
-    def __init__(self, data, policy):
+    def __init__(self, data, policy, *, tree_inputs=None):
         self.data, self.policy = data, policy
         self.settings = data.store.provenance.get("methods", {})
         self.apc = data.store.provenance["apc_universe"]
@@ -64,6 +64,13 @@ class CalibrationModel:
                 self.groups.setdefault(group, []).append((spec.name, region))
         self.ids = [candidate_id(data.store.maps, t) for t in self.triples]
         self.worker_weight_budget = None
+        self.tree_inputs = (
+            tree_inputs
+            if tree_inputs is not None
+            else policy.tree.load(data.weights.observation_ids)
+            if policy.tree
+            else None
+        )
         self._check_budget()
         if self.support and set(self.support.training_observations).intersection(
             data.weights.observation_ids
@@ -71,7 +78,18 @@ class CalibrationModel:
             raise ValueError(
                 "calibration needs evaluation observations independent of training-derived state pooling"
             )
-        if policy.null in GENERATIVE:
+        if policy.null == "independent_site_tree":
+            if self.masks:
+                raise ValueError(
+                    "independent-site simulation cannot preserve candidate-specific forbidden joint states"
+                )
+            self.tree, self.diagnostics = policy.tree.fit(
+                data.msa, data.weights, loaded=self.tree_inputs
+            )
+            self.observed = self._project(
+                self._matching_scores(data.msa, data.weights, archived=True)
+            )
+        elif policy.null in GENERATIVE:
             self._generative()
         else:
             self._matching()
@@ -103,6 +121,12 @@ class CalibrationModel:
         widths = [c.n_sites for c in self.data.msa.components]
         cart = sum(widths[x] * widths[y] for x, y in PAIRS)
         peak = rows * sum(widths) * 8
+        if self.tree_inputs is not None:
+            from triplet_coevolution.validation.tree_model import tree_workspace
+
+            trees = self.tree_inputs[0]
+            trees = trees.values() if isinstance(trees, dict) else [trees]
+            peak += tree_workspace(max(len(t.parents) for t in trees), rows, widths)
         if p.null not in GENERATIVE and self.data.weights.policy not in {
             "uniform",
             "clade_balanced",
@@ -355,7 +379,11 @@ class CalibrationModel:
                 for spec in self.specs
             }
         else:
-            shuffled = self.shuffle.draw(streams.generator("matching"))
+            shuffled = (
+                self.tree.draw(streams.generator("independent_site_tree"))
+                if p.null == "independent_site_tree"
+                else self.shuffle.draw(streams.generator("matching"))
+            )
             w = self.data.weights
             if w.policy not in {"uniform", "supplied", "clade_balanced"}:
                 w = sequence_weights(

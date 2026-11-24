@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "source": "Synthetic grouping by the second topological edge from the declared tree root.",
+  "clade_tree": {"newick": "observations.nwk"},
+  "tree_depth": 2,
+  "statistics": ["mi_bits", "dca_apc"],
+  "weight_policy": "uniform",
+  "top_k": 2,
+  "bootstrap_draws": 20,
+  "seed": 7
+}

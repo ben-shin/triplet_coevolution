@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "null": "independent_site_tree",
+  "statistics": ["mi_bits", "mi_apc"],
+  "draws": 19,
+  "planned_draws": 19,
+  "seed": 7,
+  "family": "interface",
+  "tree": {
+    "newick": "observations.nwk",
+    "source": "Synthetic balanced example topology and illustrative substitution lengths.",
+    "origin": "synthetic",
+    "frequency_policy": "empirical",
+    "prior_mass": 0,
+    "rate_scale": 1
+  }
+}

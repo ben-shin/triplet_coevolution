@@ -9,6 +9,7 @@ import numpy as np
 
 from triplet_coevolution.inference.scores import get_score
 from triplet_coevolution.validation.fdr import bh_adjust
+from triplet_coevolution.validation.tree_design import TreeDesign
 
 MATCHING = {"whole_component", "within_stratum", "preserve_ab", "preserve_ac", "preserve_bc"}
 GENERATIVE = {"m2_bootstrap", "pair_panel"}
@@ -32,12 +33,17 @@ class NullPolicy:
     checkpoint_mib: int = 1024
     strata_column: str | None = None
     weight_design: str = "uniform"
+    tree: TreeDesign | None = None
 
     def __post_init__(self):
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("unsupported null-policy schema version")
-        if self.null not in MATCHING | GENERATIVE:
+        if self.null not in MATCHING | GENERATIVE | {"independent_site_tree"}:
             raise ValueError(f"unknown null model {self.null!r}")
+        if (self.tree is not None) != (self.null == "independent_site_tree"):
+            raise ValueError("independent_site_tree requires its own supplied tree design")
+        if self.tree is not None:
+            object.__setattr__(self, "tree", TreeDesign.parse(self.tree))
         if not isinstance(self.statistics, (tuple, list)) or not self.statistics:
             raise ValueError("statistics must be a nonempty list of registered score names")
         for name in self.statistics:
@@ -72,12 +78,15 @@ class NullPolicy:
             not isinstance(self.strata_column, str) or not self.strata_column.strip()
         ):
             raise ValueError("strata_column must name a match-table field")
-        if self.strata_column is not None and self.null in GENERATIVE | {"whole_component"}:
+        if self.strata_column is not None and self.null in GENERATIVE | {
+            "whole_component",
+            "independent_site_tree",
+        }:
             raise ValueError(f"{self.null} does not sample within named strata")
         if self.null == "within_stratum" and self.strata_column is None:
             raise ValueError("within_stratum requires strata_column")
         if self.weight_design not in {"uniform", "fixed_design"} or (
-            self.null in MATCHING and self.weight_design != "uniform"
+            self.null not in GENERATIVE and self.weight_design != "uniform"
         ):
             raise ValueError(
                 "weight_design is uniform or, for an independent supplied design in an iid bootstrap, fixed_design"
@@ -99,8 +108,16 @@ class NullPolicy:
         if not isinstance(source, dict):
             raise TypeError("null policy must be a JSON object")
         data = dict(source)
+        if data.get("tree") is not None:
+            data["tree"] = TreeDesign.parse(data["tree"], base)
         if data.get("checkpoint") is not None:
             data["checkpoint"] = base / data["checkpoint"]
+        if (
+            overrides.get("draws") is not None
+            and data.get("planned_draws") is None
+            and "draws" in data
+        ):
+            data["planned_draws"] = data["draws"]
         data.update({k: v for k, v in overrides.items() if v is not None})
         unknown = set(data) - {f.name for f in fields(cls)}
         if unknown:

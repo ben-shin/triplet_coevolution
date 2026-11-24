@@ -79,6 +79,8 @@ For a three-site comparison with the best-fitting pairwise maximum-entropy distr
 
 Use `triplet calibrate` to test individual scores from a saved analysis, or pass `--null-policy` while scoring. Each result identifies the null question, exchangeable observations, tested coordinates, achievable p-value resolution and completed draws. [Named nulls and checkpoint recovery](docs/calibration.md)
 
+Test independent-site evolution on a supplied Newick tree with `triplet calibrate`. Use `triplet split` to reserve complete clades before reading outcomes, and `triplet stability` to compare training ranks with scores re-estimated on the held-out clades. [Evolutionary model, tree sensitivity and split examples](docs/evolutionary-controls.md)
+
 ## Prepare your inputs
 
 Supply one aligned FASTA or one Stockholm alignment per component. Sequences within a component must have equal aligned lengths and unique, case-sensitive IDs. For FASTA, the ID is the first whitespace-delimited token after `>`. Each component defaults to `protein`. Set `--a-type`, `--b-type` or `--c-type` to `protein`, `dna` or `rna` as needed.

@@ -29,6 +29,7 @@ from triplet_coevolution.analysis_plan import (
     write_weights,
 )
 from triplet_coevolution.calibration import calibrate
+from triplet_coevolution.clade_workflow import CladePolicy, split, stability
 from triplet_coevolution.core.coordinates import build_reference_map
 from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
@@ -61,6 +62,8 @@ app.command("benchmark")(benchmark)
 app.command("export")(export)
 app.command("report")(report)
 app.command("calibrate")(calibrate)
+app.command("stability")(stability)
+app.command("split")(split)
 app.command("structure-map")(structure_map)
 app.command("contacts")(structure_map)
 
@@ -117,6 +120,8 @@ def _stage_run(out: Path) -> Iterator[Path]:
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
                 marker_names = (
+                    "stability_summary.json",
+                    "split_manifest.json",
                     "calibration.json",
                     "structure_summary.json",
                     "workflow_summary.json",
@@ -433,6 +438,7 @@ def analyze(
         ),
     ] = False,
     null_policy: Annotated[Path | None, typer.Option("--null-policy", help="Named null-model and registered-statistic calibration JSON.")] = None,
+    stability_policy: Annotated[Path | None, typer.Option("--stability-policy",help="Clade hold-out and bootstrap policy JSON applied to original input rows and sites.")] = None,
 ) -> dict | None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     options = locals().copy()
@@ -441,6 +447,7 @@ def analyze(
         from triplet_coevolution.validation.null_policy import NullPolicy, calibration_plan
 
         named_null = NullPolicy.from_config(null_policy) if null_policy else None
+        clade_policy = CladePolicy.from_config(stability_policy) if stability_policy else None
         if named_null and permutations:
             raise ValueError("choose --null-policy or legacy --permutations for a native analysis")
         started = datetime.now(UTC)
@@ -560,6 +567,7 @@ def analyze(
             ("candidate_policy", candidate_policy),
             ("local_policy", local_policy),
             ("null_policy", null_policy),
+            ("stability_policy", stability_policy),
             ("triplet_candidates", triplet_candidates),
             ("contacts", contacts),
             ("site_panel", site_panel),
@@ -606,6 +614,7 @@ def analyze(
                 (a_strand, b_strand, c_strand),
             )
         )
+        original_maps = maps
         matched = synchronize(*original, table)
         widths = [c.n_sites for c in matched.components]
         # Encoded alignments, canonical masks, per-column histograms and cumulative gap runs.
@@ -715,6 +724,40 @@ def analyze(
                 threebody_model=threebody_model,
                 weight_policy=weight_policy,
             )
+        if named_null and named_null.tree:
+            from triplet_coevolution.validation.tree_model import tree_workspace
+
+            ids = tuple(m.observation_id for m in filtered.msa.matches)
+            plans = []
+            for scenario in named_null.tree.scenarios:
+                tree, details = scenario.load(ids)
+                nodes = max(
+                    len(t.parents) for t in (tree.values() if isinstance(tree, dict) else [tree])
+                )
+                tree_bytes = (
+                    tree_workspace(nodes, len(ids), [m.n_sites for m in maps]) * named_null.workers
+                )
+                plans.append(
+                    {
+                        "label": scenario.label,
+                        "scope": details["scope"],
+                        "origin": scenario.origin,
+                        "trees": details["topologies"],
+                        "numeric_draw_bytes_all_workers": tree_bytes,
+                    }
+                )
+            plan["calibration"]["tree_scenarios"] = plans
+        if clade_policy:
+            from triplet_coevolution.validation.clade_stability import make_split_plan
+
+            group_ids, src, test_groups = clade_policy.partition(table, inputs["matches"]["sha256"])
+            splits = make_split_plan(
+                tuple(m.observation_id for m in table.matches),
+                group_ids,
+                test_groups=test_groups,
+                source=src,
+            )
+            plan["stability"]={"source_observations":len(table.matches),"groups":len(set(group_ids.values())),"folds":len(splits.folds),"bootstrap_draws":clade_policy.options.get("bootstrap_draws",0)}
         plan["inputs"] = {k: {"sha256": v["sha256"]} for k, v in inputs.items()}
         plan["input_alignments"] = {
             m.name: {
@@ -1027,6 +1070,21 @@ def analyze(
                 }
                 summary["outputs"]["calibration"] = "calibration/calibration.json"
                 summary["outputs"]["calibration_report"] = "calibration/report.html"
+            if clade_policy:
+                from triplet_coevolution.clade_workflow import _write_stability
+
+                if _file_stamp(paths["stability_policy"]) != stamps["stability_policy"]:
+                    raise ValueError("stability policy changed during analysis")
+                _write_stability(
+                    stage / "stability",
+                    stage,
+                    clade_policy,
+                    summary=summary,
+                    live=(matched, original_maps, table),
+                )
+                summary["clade_stability"] = plan["stability"]
+                summary["outputs"]["stability"] = "stability/stability_summary.json"
+                summary["outputs"]["stability_report"]="stability/report.html"
             ranked = ranked_tables(summary)
             if plots and threebody:
                 from triplet_coevolution.reporting.plots import save_triple_plot
