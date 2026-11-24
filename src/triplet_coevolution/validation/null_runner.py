@@ -406,7 +406,7 @@ def _finish_run(header, acc, actual, threshold, *, resources, resumed, workers, 
 
 def _progress_rate(done, restored, requested, work_start):
     new = max(0, done - restored) if work_start is not None else 0
-    elapsed = time.monotonic() - work_start if work_start is not None else 0
+    elapsed = time.perf_counter() - work_start if work_start is not None else 0
     rate = new / elapsed if new and elapsed > 0 else None
     return {
         "new_draws": new,
@@ -442,7 +442,7 @@ def run_null(
     independent of draw completion order. Include all inputs, scoring settings, masks
     and coordinate identities in identity. Each family defines its own coherent maxT.
     """
-    start = time.monotonic()
+    start = time.perf_counter()
     if not isinstance(resume, bool):
         raise TypeError("resume must be boolean")
     workers = _integer(workers, "workers", 1, MAX_WORKERS)
@@ -498,7 +498,7 @@ def run_null(
                     "completed": acc.n,
                     "requested_draws": b,
                     "planned_draws": final,
-                    "elapsed_seconds": time.monotonic() - start,
+                    "elapsed_seconds": time.perf_counter() - start,
                     **_progress_rate(acc.n, resumed, b, work_start),
                     **details,
                 }
@@ -519,7 +519,7 @@ def run_null(
                 for rid, packed in journal.records():
                     acc.add(rid, packed)
             resumed = acc.n
-            work_start = time.monotonic()
+            work_start = time.perf_counter()
             emit("run_started", restored_draws=resumed, workers=workers)
             todo = (int(i) for i in schedule if not acc.complete[i])
             for rid, packed in _compute(todo, workers, compute):
@@ -535,7 +535,7 @@ def run_null(
                 resources=resources,
                 resumed=resumed,
                 workers=workers,
-                elapsed=time.monotonic() - start,
+                elapsed=time.perf_counter() - start,
             )
     except BaseException as exc:
         emit("run_failed", exception_type=type(exc).__name__)

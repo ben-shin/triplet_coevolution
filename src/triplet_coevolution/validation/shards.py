@@ -347,14 +347,14 @@ def run_shard(
             raise ValueError("duplicate or unassigned replicate in shard")
         seen[rid] = 2
 
-    start = time.monotonic()
+    start = time.perf_counter()
     done = restored = 0
     latest_heartbeat = start
     work_start = start
 
     def heartbeat():
         nonlocal latest_heartbeat
-        latest_heartbeat = time.monotonic()
+        latest_heartbeat = time.perf_counter()
         _atomic_json(
             root / "timing.json",
             {
@@ -371,7 +371,7 @@ def run_shard(
     def emit(event, rid=None, **kwargs):
         if progress:
             with lock:
-                elapsed = time.monotonic() - start
+                elapsed = time.perf_counter() - start
                 progress(
                     {
                         "event": event,
@@ -400,7 +400,7 @@ def run_shard(
             for rid, _ in journal.records():
                 accept(rid)
             done = restored = journal.count
-            work_start = time.monotonic()
+            work_start = time.perf_counter()
             existing = (
                 _load_receipt(root, plan, limit) if (root / "receipt.json").exists() else None
             )
@@ -415,7 +415,7 @@ def run_shard(
                 journal.append(rid, packed)
                 accept(rid)
                 done += 1
-                if time.monotonic() - latest_heartbeat >= 5:
+                if time.perf_counter() - latest_heartbeat >= 5:
                     heartbeat()
                 emit("replicate_completed", rid)
             if done != len(ids):
@@ -449,7 +449,7 @@ def _reader(root):
 def merge_shards(plan, directories, *, memory_budget_bytes=None, progress=None):
     """Return a normal final NullRun only after verifying exact global coverage and all evidence."""
     plan.verify()
-    start = time.monotonic()
+    start = time.perf_counter()
     limit = (
         engine.DEFAULT_WORKSPACE
         if memory_budget_bytes is None
@@ -487,7 +487,7 @@ def merge_shards(plan, directories, *, memory_budget_bytes=None, progress=None):
                 raise ValueError("shard receipt disagrees with verified evidence")
         receipt_tags.append(rec["receipt_sha256"])
         if progress:
-            elapsed = time.monotonic() - start
+            elapsed = time.perf_counter() - start
             progress(
                 {
                     "event": "shard_merged",
@@ -510,7 +510,7 @@ def merge_shards(plan, directories, *, memory_budget_bytes=None, progress=None):
         resources=res,
         resumed=0,
         workers=1,
-        elapsed=time.monotonic() - start,
+        elapsed=time.perf_counter() - start,
     )
     result.manifest["distributed"] = {
         "shards": len(receipt_tags),

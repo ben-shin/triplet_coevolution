@@ -113,7 +113,9 @@ def test_foreign_mismatched_inputs_mask_seed_code_and_corruption(tmp_path):
         run_shard(plan, evaluate, path, replicate_ids=range(19), resume=True)
 
 
-def test_native_and_shard_progress_measure_only_new_committed_draws(tmp_path):
+def test_native_and_shard_progress_measure_only_new_committed_draws(tmp_path, monkeypatch):
+    # On Windows 3.11 a fast checkpoint commit can finish inside one GetTickCount64 tick.
+    monkeypatch.setattr("time.monotonic", lambda: 1.0)
     obs, opts = design()
     plan = prepare_shard_plan(obs, evaluate, **opts)
 
