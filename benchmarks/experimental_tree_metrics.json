@@ -1,0 +1,167 @@
+{
+  "admitted": 590,
+  "dispositions": {
+    "direct": 11,
+    "identical_NCBI_pair": 579,
+    "no_exact_representative_tip": 298
+  },
+  "distinct_phyla": 27,
+  "induced_tree_sha256": "b9e7a98ad8c5acd2e6dac20ea1a674a9b78c183acda5cb7fee9a21b9d5cc78bb",
+  "input": 888,
+  "protocol_sha256": "14d58d27f6b6f4730b493a66ac3c3df1fac25ae01b5c1a4ab733b943d3f42b24",
+  "sites": {
+    "A": {
+      "eligible": 459,
+      "selected": 8
+    },
+    "B": {
+      "eligible": 447,
+      "selected": 8
+    },
+    "C": {
+      "eligible": 92,
+      "selected": 8
+    }
+  },
+  "tree_test": {
+    "bh_below_or_equal_05": 0,
+    "clades": [
+      {
+        "common_pairs": 192,
+        "heldout": 89,
+        "overlap_top10": 2,
+        "phylum": "p__Actinomycetota",
+        "spearman": 0.6382475704171867,
+        "train": 501
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 8,
+        "overlap_top10": 0,
+        "phylum": "p__Aquificota",
+        "spearman": 0.4494502681218536,
+        "train": 582
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 128,
+        "overlap_top10": 3,
+        "phylum": "p__Bacillota",
+        "spearman": 0.8373120804962376,
+        "train": 462
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 88,
+        "overlap_top10": 2,
+        "phylum": "p__Bacillota_I",
+        "spearman": 0.5789419307921115,
+        "train": 502
+      },
+      {
+        "common_pairs": 176,
+        "heldout": 19,
+        "overlap_top10": 3,
+        "phylum": "p__Campylobacterota",
+        "spearman": 0.8003416734047378,
+        "train": 571
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 10,
+        "overlap_top10": 0,
+        "phylum": "p__Chlamydiota",
+        "spearman": 0.5861892948539532,
+        "train": 580
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 16,
+        "overlap_top10": 3,
+        "phylum": "p__Cyanobacteriota",
+        "spearman": 0.4574263924692676,
+        "train": 574
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 31,
+        "overlap_top10": 2,
+        "phylum": "p__Desulfobacterota",
+        "spearman": 0.7470814556252827,
+        "train": 559
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 9,
+        "overlap_top10": 0,
+        "phylum": "p__Fusobacteriota",
+        "spearman": 0.5005755509728206,
+        "train": 581
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 55,
+        "overlap_top10": 2,
+        "phylum": "p__Planctomycetota",
+        "spearman": 0.7084636992524251,
+        "train": 535
+      },
+      {
+        "common_pairs": 192,
+        "heldout": 82,
+        "overlap_top10": 4,
+        "phylum": "p__Pseudomonadota",
+        "spearman": 0.8509470900973967,
+        "train": 508
+      },
+      {
+        "common_pairs": 189,
+        "heldout": 23,
+        "overlap_top10": 2,
+        "phylum": "p__Spirochaetota",
+        "spearman": 0.5312673433282309,
+        "train": 567
+      }
+    ],
+    "global_max_p": 0.54,
+    "min_bh_q": 0.192,
+    "min_marginal_p": 0.01,
+    "nominal_below_or_equal_05": 30,
+    "observed_max_mi_bits": 0.7128438920833701,
+    "phylum_size_distribution": {
+      "p__Actinomycetota": 89,
+      "p__Aquificota": 8,
+      "p__Armatimonadota": 1,
+      "p__Babelota": 2,
+      "p__Bacillota": 128,
+      "p__Bacillota_I": 88,
+      "p__Bacteroidota": 5,
+      "p__Caldisericota": 2,
+      "p__Campylobacterota": 19,
+      "p__Campylobacterota_A": 1,
+      "p__Chlamydiota": 10,
+      "p__Chloroflexota": 1,
+      "p__Cyanobacteriota": 16,
+      "p__Deinococcota": 1,
+      "p__Desulfobacterota": 31,
+      "p__Elusimicrobiota": 2,
+      "p__Fusobacteriota": 9,
+      "p__Myxococcota_A": 1,
+      "p__Nitrospirota": 2,
+      "p__Omnitrophota": 1,
+      "p__Patescibacteriota": 1,
+      "p__Planctomycetota": 55,
+      "p__Pseudomonadota": 82,
+      "p__Spirochaetota": 23,
+      "p__Synergistota": 3,
+      "p__Thermodesulfobiota": 2,
+      "p__Verrucomicrobiota": 7
+    },
+    "replicates": 99,
+    "seed": 732119,
+    "simulated_max_95pct": 0.9441464040339028,
+    "simulated_max_median": 0.7202819104846708,
+    "tested": 192
+  },
+  "tree_tips": 189801
+}
