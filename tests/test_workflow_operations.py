@@ -375,3 +375,20 @@ def test_renamed_tree_policy_reuses_only_matching_law(tmp_path):
     assert changed[0] == "executed" and changed[1] != old[1]
     assert run_at(tmp_path / "fresh", 3.51) == changed
     assert len(list((work / "checkpoints").glob("*/null.sqlite3"))) == 2
+
+
+def test_final_verification_event_on_coarse_clock(tmp_path, monkeypatch):
+    from triplet_coevolution import operations
+
+    (tmp_path / "payload").write_bytes(b"ok")
+    monkeypatch.setattr(operations.time, "monotonic", lambda: 42.0)
+    events = []
+    assert operations.inventory(tmp_path, events.append)["payload"]["bytes"] == 2
+    assert events == [
+        {
+            "verified_bytes": 2,
+            "total_bytes": 2,
+            "bytes_per_second": None,
+            "estimated_remaining_seconds": 0,
+        }
+    ]

@@ -72,14 +72,18 @@ def inventory(directory, progress=None):
         nonlocal processed, last
         processed += size
         now = time.monotonic()
-        if progress and (now - last >= 5 or processed == total) and now > start:
-            rate = processed / (now - start)
+        if progress and (now - last >= 5 or processed == total):
+            rate = processed / (now - start) if now > start else None
             progress(
                 {
                     "verified_bytes": processed,
                     "total_bytes": total,
                     "bytes_per_second": rate,
-                    "estimated_remaining_seconds": max(0, total - processed) / rate,
+                    "estimated_remaining_seconds": 0
+                    if processed == total
+                    else (total - processed) / rate
+                    if rate
+                    else None,
                 }
             )
             last = now
