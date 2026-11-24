@@ -4,11 +4,12 @@ import base64
 import csv
 import json
 from html import escape
-from itertools import groupby
+from itertools import groupby, islice
 from pathlib import Path
 from urllib.parse import quote
 
 from triplet_coevolution.inference.scores import get_score
+from triplet_coevolution.reporting.explore_data import artifact
 from triplet_coevolution.reporting.network import RankedTable, ranked_tables
 
 STYLE = """
@@ -85,7 +86,7 @@ def _triple_evidence(directory: Path, triples: list[dict], pair_tables: dict, se
         keys = [(row[f"{pair[0].lower()}_original_col"], row[f"{pair[1].lower()}_original_col"])
                 for row in triples]
         scores = dict.fromkeys(keys, "Outside MI export")
-        path = directory / pair_tables[pair].path
+        path = artifact(directory,pair_tables[pair].path)
         with path.open(encoding="utf-8", newline="") as handle:
             for row in csv.DictReader(handle, delimiter="," if path.suffix == ".csv" else "\t"):
                 key = (row["x_original_col"], row["y_original_col"])
@@ -146,7 +147,7 @@ def _benchmarks(directory: Path, advanced: dict) -> str:
             delimiter = "," if path.endswith(".csv") else "\t"
             tested = discoveries = 0
             lowest = None
-            with (directory / path).open(encoding="utf-8", newline="") as handle:
+            with artifact(directory,path).open(encoding="utf-8", newline="") as handle:
                 for row in csv.DictReader(handle, delimiter=delimiter):
                     if row.get("bh_q") not in (None, ""):
                         value = float(row["bh_q"])
@@ -160,7 +161,7 @@ def _benchmarks(directory: Path, advanced: dict) -> str:
                 f"Smallest q {_text(minimum)}. {_link(path, 'Open permutation results')}.</p>"
             )
         elif path == "contacts.json":
-            contact_data = json.loads((directory / path).read_text(encoding="utf-8"))
+            contact_data = json.loads(artifact(directory,path).read_text(encoding="utf-8"))
             rows = []
             for method, counts in contact_data["methods"].items():
                 metrics = ["Unavailable" if counts[k] is None else f"{counts[k]:.3f}"
@@ -210,6 +211,8 @@ def _refresh_report_hash(directory: Path, summary: dict) -> None:
     if "artifact_sha256" in summary:
         from triplet_coevolution.io.score_store import file_digest
         summary["artifact_sha256"]["report.html"] = file_digest(directory / "report.html")
+        if name := summary.get("outputs",{}).get("explorer"):
+            summary["artifact_sha256"][name] = file_digest(directory / name)
         (directory / "run_summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
         )
@@ -220,9 +223,9 @@ def _workflow_section(workflow: dict, matching_qc: dict) -> str:
         (name, component["backend"], component["molecule"], component["reference_id"], component["hits"])
         for name, component in workflow["search"].items()
     ))
-    excluded = [(row["group_id"], "; ".join(row["reasons"]))
-                for row in matching_qc["groups"] if not row["matched"]]
-    skipped = _table(["Excluded group", "Reason"], excluded[:10]) if excluded else ""
+    excluded = list(islice(((row["group_id"], "; ".join(row["reasons"]))
+                for row in matching_qc["groups"] if not row["matched"]),10))
+    skipped = _table(["Excluded group", "Reason"], excluded) if excluded else ""
     paths = [("../workflow_summary.json", "Workflow manifest"),
              ("../" + workflow["matching_qc"], "Full matching audit"),
              ("../" + workflow["prepared"] + "/matches.tsv", "Prepared match table")]
@@ -259,6 +262,14 @@ def write_unmatched_report(directory, workflow):
 def attach_workflow_report(directory: Path, workflow_summary: dict, matching_qc: dict) -> None:
     """Include the search and matching audit in the report published by the full workflow."""
     summary = json.loads((directory / "run_summary.json").read_text(encoding="utf-8"))
+    summary["workflow_context"] = {
+        "kind":"search", "policy":workflow_summary["paralogs"],
+        "matched":workflow_summary["matched_groups"], "excluded":workflow_summary["excluded_groups"],
+        "components":[[c,v["backend"],v["molecule"],v["reference_id"],v["hits"]]
+                      for c,v in workflow_summary["search"].items()],
+        "exclusion_examples":list(islice(([r["group_id"],"; ".join(r["reasons"])] for r in
+                               matching_qc["groups"] if not r["matched"]),10)),
+    }
     write_report(directory, summary, ranked_tables(summary),
                  workflow_section=_workflow_section(workflow_summary, matching_qc))
     _refresh_report_hash(directory, summary)
@@ -287,6 +298,15 @@ def row_support_section(workflow, prefix=""):
 def attach_evidence_report(directory: Path, workflow: dict) -> None:
     """Connect a scored Stockholm subset to its original row, group and coordinate evidence."""
     summary = json.loads((directory / "run_summary.json").read_text(encoding="utf-8"))
+    summary["workflow_context"]={
+        "kind":"evidence","resolved":workflow["counts"]["resolved_groups"],
+        "status":workflow.get("status",""), "reason":workflow.get("reason",""),
+        "components":[[c,v["name"],v["source_rows"],v["exported_rows"],v["reference_id"]]
+                      for c,v in workflow["components"].items()],
+        "selected_widths":workflow.get("scoring_panel",{}).get("selected_widths",{}),
+        "observation_qc":{k:v for k,v in (workflow.get("observation_qc") or {}).items()
+                          if k in ("input_observations","eligible_observations","excluded_observations","examples")},
+    }
     table = _table(["Component", "Folder or name", "Source rows", "Exported rows", "Reference"], (
         (key, comp["name"], comp["source_rows"], comp["exported_rows"], comp["reference_id"])
         for key, comp in workflow["components"].items()
@@ -318,8 +338,34 @@ def attach_evidence_report(directory: Path, workflow: dict) -> None:
     _refresh_report_hash(directory, summary)
 
 
+def _saved_workflow(context):
+    if not context: return ""
+    if context.get("kind") == "search":
+        return ('<section id="workflow"><h2>Search and matching</h2>'
+                +_table(["Component","Search method","Molecule","Reference","Retrieved hits"],context["components"])
+                +f'<p>{int(context["matched"]):,} matched groups and {int(context["excluded"]):,} exclusions under {_text(context["policy"])}.</p>'
+                +_table(["Excluded group","Reason"],context["exclusion_examples"])
+                +'<p>The parent workflow manifest and full matching audit remain in the source workflow directory.</p></section>')
+    if context.get("kind") == "evidence":
+        extra=""
+        if widths:=context.get("selected_widths"):
+            extra+="<p>Panel sites per component before QC: "+_text(", ".join(f"{c} {n}" for c,n in widths.items()))+".</p>"
+        if qc:=context.get("observation_qc"):
+            extra+=f'<p>{int(qc["eligible_observations"]):,} of {int(qc["input_observations"]):,} candidate observations passed row QC.</p>'
+            extra+=_table(["Excluded observation","Component","QC pass"],[(r["observation_id"],r["components"],r["pass"]) for r in qc.get("examples",[])[:10]])
+        return ('<section id="workflow"><h2>Stockholm families and matching evidence</h2>'
+                +_table(["Component","Folder or name","Source rows","Exported rows","Reference"],context["components"])
+                +f'<p>{int(context["resolved"]):,} resolved groups. {_text(context["status"])}. {_text(context["reason"])}</p>'+extra
+                +'<p>The source workflow directory retains the full per-candidate and matching evidence.</p></section>')
+    return ""
+
+
 def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
-                 workflow_section: str = "") -> None:
+                 workflow_section: str = "", palette="accessible", figure_formats=(), store=None) -> None:
+    from triplet_coevolution.reporting.explore import write_explorer
+    workflow_section = workflow_section or _saved_workflow(summary.get("workflow_context"))
+    explorer=write_explorer(directory,summary,tables,store=store,palette=palette,figure_formats=figure_formats)
+    summary["outputs"]["explorer"]=explorer
     components = summary["components"]
     outputs = summary["outputs"]
     advanced = summary.get("advanced", {})
@@ -351,7 +397,7 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
     legend = "".join(f'<span><i class="{css}"></i>{label}</span>'
                      for css, label in (("canonical", "Canonical"), ("gap", "Gap"),
                                         ("missing", "Ambiguous or missing")))
-    files = [t.path for t in tables]
+    files = [explorer, *(t.path for t in tables)]
     files.extend(info["path"] for info in advanced.get("outputs", {}).values())
     files.extend([outputs["network"]["path"], "run_summary.json", *outputs["figures"].values()])
     files.extend(
@@ -393,16 +439,16 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
         )
     picture = ""
     if combined := outputs["figures"].get("triplet"):
-        payload = base64.b64encode((directory / combined).read_bytes()).decode("ascii")
+        payload = base64.b64encode(artifact(directory,combined).read_bytes()).decode("ascii")
         picture = ('<h3>Mutual information across component pairs</h3>'
                    f'<img alt="AB, AC and BC score heatmaps with a shared scale" '
                    f'src="data:image/png;base64,{payload}">')
     if combined := outputs["figures"].get("dca"):
-        payload = base64.b64encode((directory / combined).read_bytes()).decode("ascii")
+        payload = base64.b64encode(artifact(directory,combined).read_bytes()).decode("ascii")
         picture += (f'<h3>Direct coupling scores · {_text(summary["ranking"]["dca"])}</h3>'
                     f'<img alt="All three DCA score matrices" src="data:image/png;base64,{payload}">')
     if triple := outputs["figures"].get("threebody"):
-        payload = base64.b64encode((directory / triple).read_bytes()).decode("ascii")
+        payload = base64.b64encode(artifact(directory,triple).read_bytes()).decode("ascii")
         picture += (f'<h3>Leading tested triples · {_text(summary["ranking"]["threebody"])}</h3>'
                     f'<img alt="Leading signed or RMS ABC scores" src="data:image/png;base64,{payload}">')
     settings = _table(["Setting", "Value"], _definition_rows(summary["settings"]))
@@ -487,7 +533,7 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
 <meta name="color-scheme" content="light"><title>Triplet coevolution analysis</title><style>{STYLE}</style></head>
 <body><header><h1>Triplet coevolution</h1><p>Associations across three matched sequence alignments</p></header>
 <nav aria-label="Sections">{'<a href="#workflow">Search &amp; matching</a>' if workflow_section else ""}
-<a href="#quality">Quality control</a><a href="#scores">Site rankings</a>
+<a href="explore.html">Explore results</a><a href="#quality">Quality control</a><a href="#scores">Site rankings</a>
 <a href="#benchmarks">Benchmarks</a><a href="#files">Files &amp; settings</a></nav>
 <main>{workflow_section}<section id="quality"><h2>Alignment quality</h2><dl class="metrics">{metrics_html}</dl>
 {qc}<div class="composition" aria-hidden="true">{"".join(strips)}<div class="legend">{legend}</div></div>

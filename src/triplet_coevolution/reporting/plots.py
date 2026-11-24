@@ -99,8 +99,15 @@ def _axis_ticks(mapping: ReferenceCoordinates, max_ticks: int) -> tuple[np.ndarr
 
   return indices, labels
 
-def _mi_cmap(score: str) -> LinearSegmentedColormap:
-  """use classic red green black heatmap colors"""
+def _mi_cmap(score: str, palette: str = "classic") -> LinearSegmentedColormap:
+  """Preserve the historical palette for direct plot calls and explicit legacy runs."""
+  if palette != "classic":
+    from triplet_coevolution.reporting.explore_figures import PALETTES
+    if palette not in PALETTES:
+      raise ValueError(f"unknown MI palette {palette!r}")
+    return LinearSegmentedColormap.from_list(
+      palette, PALETTES[palette][int(score == "mi_apc")], N=257
+    ).with_extremes(bad="#696e78")
 
   if score == "mi_apc":
     colors = ["#06ff00", "#000000", "#ff2500"]
@@ -123,10 +130,11 @@ def _draw_block(
   score: str,
   max_ticks: int,
   limits: tuple[float, float],
+  palette: str,
 ):
   """draw one mi matrix w ref labels and nan cells masked"""
 
-  cmap = _mi_cmap(score)
+  cmap = _mi_cmap(score,palette)
 
   image = ax.imshow(
     np.ma.masked_invalid(data),
@@ -163,6 +171,7 @@ def plot_mi_block(
   max_ticks: int = 8,
   show_colorbar: bool = True,
   figsize: tuple[float, float] = (8, 5),
+  palette: str = "classic",
 ) -> tuple[Figure, Axes]:
   """plot one mi block using reference seq numbering"""
 
@@ -174,7 +183,7 @@ def plot_mi_block(
   limits = _color_limits([data], score)
 
   fig, ax = plt.subplots(figsize=figsize)
-  image = _draw_block(ax, block, x_map, y_map, data, score, max_ticks, limits)
+  image = _draw_block(ax, block, x_map, y_map, data, score, max_ticks, limits,palette)
 
   if show_colorbar and np.isfinite(data).any():
     fig.colorbar(image, ax=ax, label=f"{score} (bits)")
@@ -194,6 +203,7 @@ def plot_triplet_mi(
   max_ticks: int = 6,
   shared_scale: bool = True,
   figsize: tuple[float, float] = (15, 4.5),
+  palette: str = "classic",
 ) -> tuple[Figure, tuple[Axes, Axes, Axes]]:
   """plot ab ac bc together using matched score scales"""
 
@@ -217,7 +227,7 @@ def plot_triplet_mi(
 
   for ax, (block, x_map, y_map), values in zip(axes, blocks, data):
     limits = common_limits if shared_scale else _color_limits([values], score)
-    images.append(_draw_block(ax, block, x_map, y_map, values, score, max_ticks, limits))
+    images.append(_draw_block(ax, block, x_map, y_map, values, score, max_ticks, limits,palette))
 
   if shared_scale:
     if any(np.isfinite(values).any() for values in data):
@@ -243,6 +253,7 @@ def save_mi_plots(
   max_ticks: int = 8,
   fmt: str = "png",
   dpi: int = 200,
+  palette: str = "accessible",
 ) -> dict[str, Path]:
     """save ab ac bc and combined heatmaps then close figs"""
 
@@ -279,6 +290,7 @@ def save_mi_plots(
             score=score,
             min_valid=min_valid,
             max_ticks=max_ticks,
+            palette=palette,
         )
         path = out_dir / f"{score}_{name}.{fmt}"
         try:
@@ -295,6 +307,7 @@ def save_mi_plots(
         score=score,
         min_valid=min_valid,
         max_ticks=max_ticks,
+        palette=palette,
     )
     path = out_dir / f"{score}_triplet.{fmt}"
     try:

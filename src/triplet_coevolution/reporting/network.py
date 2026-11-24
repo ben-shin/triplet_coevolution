@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
+from triplet_coevolution.reporting.explore_data import artifact
+
 
 @dataclass(frozen=True)
 class RankedTable:
@@ -19,7 +21,7 @@ class RankedTable:
 
     def first_rows(self, directory: Path, limit: int):
         delimiter = "," if self.path.endswith(".csv") else "\t"
-        with (directory / self.path).open(encoding="utf-8", newline="") as handle:
+        with artifact(directory,self.path).open(encoding="utf-8", newline="") as handle:
             return list(islice(csv.DictReader(handle, delimiter=delimiter), limit))
 
 
@@ -60,7 +62,7 @@ def ranked_tables(summary: dict) -> list[RankedTable]:
     return tables
 
 
-def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -> dict:
+def write_network(directory: Path, tables: list[RankedTable], limit: int = 25, *, structure_evidence=None) -> dict:
     """Keep the top entries of each ranking and represent triples with a factor node."""
     from triplet_coevolution.inference.scores import get_score
 
@@ -70,6 +72,8 @@ def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -
         "reference_id": "string", "reference_position": "int", "label": "string",
         "method": "string", "score": "double", "rank": "int", "n_valid": "int",
         "direction": "string", "units": "string", "competition_rank": "int",
+        "evidence_kind":"string", "structure_source_kind":"string",
+        "distance_angstrom":"double","structure_category":"string",
     }
     for key, dtype in keys.items():
         ET.SubElement(root, "key", {
@@ -114,17 +118,21 @@ def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -
             }
             if len(ids) == 2:
                 edge = ET.SubElement(graph, "edge", source=ids[0], target=ids[1])
-                data(edge, kind="pair", **evidence)
+                joined={}
+                if structure_evidence is not None:
+                    key=(table.label, row["x_reference_id"],row["x_reference_pos"],row["y_reference_id"],row["y_reference_pos"])
+                    joined=structure_evidence.get(key,{})
+                data(edge, kind="pair", evidence_kind="statistical association", **evidence, **joined)
                 edges += 1
             else:
                 factor = "triple_" + "_".join(ids)
                 node = ET.SubElement(graph, "node", id=factor)
-                data(node, kind="three_site_interaction", label=" / ".join(ids), **evidence)
+                data(node, kind="three_site_interaction", evidence_kind="statistical three-site factor", label=" / ".join(ids), **evidence)
                 triples += 1
                 for site in ids:
-                    data(ET.SubElement(graph, "edge", source=site, target=factor), kind="membership")
+                    data(ET.SubElement(graph, "edge", source=site, target=factor), kind="membership",evidence_kind="factor membership")
                     edges += 1
-    path = directory / "network.graphml"
+    path = artifact(directory, "network.graphml" if structure_evidence is None else "network_structure.graphml")
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
     return {"path": path.name, "site_nodes": len(sites), "triplet_nodes": triples,
             "edges": edges, "limit_per_table": limit}
