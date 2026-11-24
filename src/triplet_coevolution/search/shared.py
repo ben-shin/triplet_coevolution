@@ -30,6 +30,23 @@ class Hit:
     model_last: int | None = None
     placement: Placement | None = None
     projection_method: str | None = None
+    query_id: str | None = None
+    target_length: int | None = None
+    model_length: int | None = None
+    sequence_evalue: float | None = None
+    conditional_evalue: float | None = None
+    envelope_first: int | None = None
+    envelope_last: int | None = None
+    source_strand: str | None = None
+    query_strand: str | None = None
+    domain_index: int | None = None
+    domain_count: int | None = None
+    source_accession: str | None = None
+    query_accession: str | None = None
+    reported_identity: float | None = None
+    aligned_length: int | None = None
+    mismatches: int | None = None
+    gap_openings: int | None = None
 
 
 def execute(args, cwd=None, *, capture_stdout=False):
@@ -61,6 +78,13 @@ def execute(args, cwd=None, *, capture_stdout=False):
 
 
 def program_versions(comp):
+    if (
+        comp["backend"] in ("jackhmmer", "import")
+        or comp.get("alignment_backend", "projection") != "projection"
+    ):
+        from triplet_coevolution.search.local_tools import tools_for
+
+        return tools_for({**comp, "alignment_backend": comp.get("alignment_backend", "projection")})
     names = {
         "reference": (),
         "hmmer": ("hmmsearch" if comp["molecule"] == "protein" else "nhmmer",),

@@ -1,8 +1,10 @@
 """Retrieve local homolog domains and retain the evidence for their reference coordinates."""
 
+import json
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import SpooledTemporaryFile, TemporaryDirectory
 
 from triplet_coevolution.core.alphabets import CANONICAL
 from triplet_coevolution.io.profiles import check_profile, read_sequences
@@ -165,11 +167,18 @@ def _place_hit(comp, reference, seq, hit, loci, possible):
     ), method
 
 
-def retrieve(comp, reference):
+def retrieve(comp, reference, *, audit_sink=None):
     possible = sum(c in CANONICAL[comp["molecule"]] for c in reference)
     best = {}
     loci = []
-    with TemporaryDirectory(prefix="triplet-search-") as tmp:
+    with TemporaryDirectory(prefix="triplet-search-") as tmp, ExitStack() as stack:
+        alternatives = (
+            stack.enter_context(
+                SpooledTemporaryFile(max_size=1024 * 1024, mode="w+t", encoding="utf-8")
+            )
+            if audit_sink is not None
+            else None
+        )
         if comp["backend"] == "reference":
             hits = _reference_hits(comp, reference, possible)
         else:
@@ -177,8 +186,45 @@ def retrieve(comp, reference):
         for hit in hits:
             # Source-interval selection precedes placement on the coordinate reference.
             rank = (-hit.score, hit.evalue or 0, hit.strand, hit.first, hit.last)
+            if alternatives is not None:
+                entry = {
+                    k: getattr(hit, k)
+                    for k in (
+                        "seq_id",
+                        "first",
+                        "last",
+                        "strand",
+                        "score",
+                        "evalue",
+                        "model_strand",
+                        "model_first",
+                        "model_last",
+                        "coverage",
+                        "identity",
+                    )
+                }
+                alternatives.write(json.dumps(entry, ensure_ascii=False) + "\n")
             if hit.seq_id not in best or rank < best[hit.seq_id][0]:
                 best[hit.seq_id] = rank, hit
+        if alternatives is not None:
+            alternatives.seek(0)
+            reported = set()
+            for line in alternatives:
+                row = json.loads(line)
+                key = row["seq_id"]
+                rank = (-row["score"], row["evalue"] or 0, row["strand"], row["first"], row["last"])
+                selected = key not in reported and rank == best[key][0]
+                if selected:
+                    reported.add(key)
+                audit_sink(
+                    {
+                        **row,
+                        "selected_legacy": selected,
+                        "reason": "legacy_best_source_hit"
+                        if selected
+                        else "legacy_alternative_domain",
+                    }
+                )
     selected = {}
     sequences = {}
     for seq_id, seq in read_sequences(comp["database"], comp["molecule"]):

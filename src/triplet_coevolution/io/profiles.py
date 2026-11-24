@@ -1,5 +1,6 @@
 """Read local, ungapped FASTA records with exact identifiers."""
 
+import gzip
 from pathlib import Path
 
 from Bio import SeqIO
@@ -9,7 +10,8 @@ from triplet_coevolution.core.alphabets import CANONICAL, encode_sequence
 
 def read_sequences(path: Path, molecule):
     seen = set()
-    with path.open(encoding="utf-8-sig") as handle:
+    opener = gzip.open if path.name.lower().endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8-sig") as handle:
         for record in SeqIO.parse(handle, "fasta"):
             seq_id = record.id
             if not seq_id or seq_id in seen:
@@ -45,7 +47,8 @@ def check_profile(comp):
     expected = {"protein": "amino", "dna": "dna", "rna": "rna"}[comp["molecule"]]
     count = 0
     alphabet = None
-    with comp["profile"].open(encoding="ascii") as handle:
+    opener = gzip.open if comp["profile"].suffix.lower() == ".gz" else open
+    with opener(comp["profile"], "rt", encoding="ascii") as handle:
         for line in handle:
             if line.startswith(marker):
                 count += 1
