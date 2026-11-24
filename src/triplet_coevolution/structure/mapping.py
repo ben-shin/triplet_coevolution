@@ -157,6 +157,11 @@ def _optimal_segment(sub, opened, extended):
     return optimum, options
 
 
+def comparison_spelling(sequence: str, molecule: str) -> str:
+    """Use the same nucleotide spelling for alignment and reference joins."""
+    return sequence.replace("U", "T") if molecule in {"rna", "dna"} else sequence
+
+
 @lru_cache(maxsize=24)
 def _align(reference, polymer, molecule, anchors=()):
     if (len(reference) + 1) * (len(polymer) + 1) > 4_000_000:
@@ -164,9 +169,8 @@ def _align(reference, polymer, molecule, anchors=()):
             "full polymer alignment exceeds four million cells; supply a domain-specific reference and structure"
         )
     alphabet, table, opened, extended = _substitution(molecule)
-    if molecule != "protein":
-        reference = reference.replace("U", "T")
-        polymer = polymer.replace("U", "T")
+    reference = comparison_spelling(reference, molecule)
+    polymer = comparison_spelling(polymer, molecule)
     x = _encoded(reference, alphabet)
     y = _encoded(polymer, alphabet)
     sub = table[np.ix_(x, y)]

@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from triplet_coevolution.io.score_store import PAIRS, ScoreStore
-from triplet_coevolution.structure.mapping import MappingResult
+from triplet_coevolution.structure.mapping import MappingResult, comparison_spelling
 
 METRICS = ("heavy", "ca", "cb")
 END_FIELDS = (
@@ -136,10 +136,12 @@ def _score_axes(store, mapping):
             )
         lookup = {p: i for i, p in enumerate(m.reference_positions) if p is not None}
         seq = mapping.references[m.component]
+        reference = comparison_spelling(seq.sequence, seq.molecule)
         for p, i in lookup.items():
             if (
                 p not in seq.positions
-                or m.symbols[i].upper() != seq.sequence[seq.positions.index(p)]
+                or comparison_spelling(m.symbols[i].upper(), seq.molecule)
+                != reference[seq.positions.index(p)]
             ):
                 raise ValueError(
                     f"score artifact reference sequence disagrees at {m.component} {p}"

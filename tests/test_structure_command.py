@@ -132,11 +132,10 @@ def test_choice_required_ambiguous_copy_and_valid_overrides(tmp_path):
     assert data["status"] == "complete" and data["roles"]["C"]["copy_id"] == "R@T"
 
 
-def test_score_joins_and_standalone_replay(tmp_path):
-    path, cfg = setup_config(tmp_path)
+def _store_for_example(path, cfg, symbols=("AC", "FW", "AU")):
     maps = tuple(
         ReferenceCoordinates(c, r["id"], (1, 2), (1, 2), tuple(s))
-        for (c, r), s in zip(cfg["references"].items(), ("AC", "FW", "AU"), strict=True)
+        for (c, r), s in zip(cfg["references"].items(), symbols, strict=True)
     )
     raw = np.array([[0.1, 0.3], [0.2, 0.4]])
     n = np.full((2, 2), 8)
@@ -153,6 +152,11 @@ def test_score_joins_and_standalone_replay(tmp_path):
         },
     )
     write_score_store(path.parent / "scores", store)
+
+
+def test_score_joins_and_standalone_replay(tmp_path):
+    path, cfg = setup_config(tmp_path)
+    _store_for_example(path, cfg)
     cfg.update(scores="scores")
     cfg.pop("negative_ratio")
     data = run_structure(write(path, cfg), tmp_path / "s")
@@ -347,3 +351,42 @@ def test_predicted_and_experimental_source_mismatch(tmp_path):
     with pytest.raises(ValueError, match="source_kind conflicts"):
         run_structure(write(path, cfg), tmp_path / "contradiction")
     assert not (tmp_path / "contradiction").exists()
+
+
+@pytest.mark.parametrize(
+    ("role", "source_sequence", "score_symbols", "compatible"),
+    [
+        ("C", "ATGC", ("AC", "FW", "AU"), True),
+        ("C", "AGGC", ("AC", "FW", "AU"), False),
+        ("A", "ATDE", ("AU", "FW", "AU"), False),
+    ],
+)
+def test_score_join_respects_typed_polymer_spelling(
+    tmp_path, role, source_sequence, score_symbols, compatible
+):
+    path, cfg = setup_config(tmp_path)
+    refs = path.parent / "references.fasta"
+    original = "ACDE" if role == "A" else "AUGC"
+    refs.write_text(refs.read_text().replace(original, source_sequence))
+    # Native RNA analysis transcribes T as U. The FASTA/structure uses the original spelling.
+    if compatible:
+        assert run_structure(path, tmp_path / "unscored")["status"] == "complete"
+    _store_for_example(path, cfg, score_symbols)
+    cfg["scores"] = "scores"
+    output = tmp_path / "scored"
+    write(path, cfg)
+    if not compatible:
+        with pytest.raises(ValueError, match=f"sequence disagrees at {role} 2"):
+            run_structure(path, output)
+        assert not output.exists()
+        return
+    summary = run_structure(path, output)
+    assert summary["status"] == "complete"
+    rows = table(output / "distances.tsv")
+    assert any(
+        r["pair"] == "AC"
+        and r["y_reference_pos"] == "2"
+        and r["y_reference_symbol"] == "T"
+        and r["mi_bits"]
+        for r in rows
+    )
