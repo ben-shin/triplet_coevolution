@@ -1,0 +1,22 @@
+{
+  "protocol": "public-independent-cohort-acquisition-v1",
+  "parent_registration_sha256_lf": "14d58d27f6b6f4730b493a66ac3c3df1fac25ae01b5c1a4ab733b943d3f42b24",
+  "eligible_frame": "GTDB R232 bacterial representative tips with exact RS_GCF_ versioned accession present in the frozen NCBI RefSeq assembly report, version_status=latest, assembly_level=Complete Genome, valid annotated FTP directory. Require a named GTDB phylum. Exclude drafts, absent accessions and GenBank-only representatives. No name-based strain substitutions.",
+  "sampling": {
+    "seed": "triplet-gtdb-r232-rnap-ribo-20261124-v1",
+    "algorithm": "Within each phylum sort ascending SHA256(seed + '/' + versioned assembly ID). In each sweep take the next candidate from every nonempty phylum in sorted phylum order. Screen complete batches of 192, at most 1536 assemblies. Stop after the first complete batch where both systems have at least 128 aligned and accepted genomes from at least four phyla. If the budget or eligible frame ends first, report the observed shortfall.",
+    "batch": 192,
+    "cap": 1536,
+    "min_genomes": 128,
+    "min_phyla": 4
+  },
+  "target_loci": {
+    "rnap": ["rpoA","rpoB","rpoC"],
+    "ribosome": ["5S","rplE","rplR"]
+  },
+  "locus_admission": "Use all replicons of each exact RefSeq assembly. Screen official annotation GFF for exact gene symbols and unambiguous equivalent product names. Count separate annotated loci even if their sequences are identical. Exclude competing plausible paralogs/split beta-prime forms, pseudogenes, partial calls, contradictory annotations, absent versioned CDS products, ambiguous rRNA intervals or missing sequence evidence. A sole gene name on an assembly is insufficient without matching product sequence. Record exact versioned protein ID or genomic record plus interval and strand, locus tag, sequence/content hashes and source checksums. Annotations do not exclude undetected paralogs.",
+  "reference": "Canonical public UniProt sequences P0A7Z4/P0A8V2/P0A8T7 and P62399/P0C018. For 5S use the unique deposited full polymer sequence annotated 5S rRNA in 4YBB (RF00001 is a family, not a single sequence). Repeated identical copies share a sequence coordinate axis; discordant copies require explicit resolution. Use sequence-only public entity metadata and FASTA, no coordinates or outcomes.",
+  "alignment": "Global affine reference alignment, Biopython PairwiseAligner, BLOSUM62 protein (open -10, extend -0.5), nucleotide match 2/mismatch -1 (open -5, extend -1); first optimal traceback returned by the frozen Biopython version. Project to ungapped reference columns, track inserted query residues, gap columns and cohort checksums. Protein exact identity >=0.20 and paired canonical coverage >=0.65 of both reference and query; 5S identity >=0.60 and coverage >=0.75 of both. Reject ambiguous alphabet of 5S outside ACGU(T) or internal stop/nonstandard protein symbols outside the established ambiguity alphabet. Require each row of the triple to pass before admitting the assembly.",
+  "scope": "Outcome-blind staging. Do not open structure coordinates, contacts, score outputs or fluorescence outcomes here. Membership, sequences, reference axes, aligner settings and provenance are frozen for later phase-gated evaluation. Primary sequence weighting for subsequent frozen archive: uniform per unique admitted assembly. Sensitivity: redistribute equal total mass to each observed GTDB phylum. Report both irrespective of performance.",
+  "prediction_estimand": "Repeated alpha copies of 4YG2 and multiple 4YBB ribosomes retain the copy rule of the parent registration; never select a copy by contact enrichment. For structurally evaluated feature ranking the eligible initially retained columns are reference positions with >=80% canonical coverage and at least two observed canonical states, selected using cohort sequence information only. Full reference-column MSAs are retained."
+}
