@@ -3,6 +3,7 @@
 import csv
 import json
 from itertools import product
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -256,3 +257,28 @@ def test_fixed_alphabet_gap_shrinkage_matches_explicit_inverse(n, scope):
         norm = np.linalg.norm(mat - mat.mean(0) - mat.mean(1, keepdims=True) + mat.mean())
         assert b.frobenius[0, 0] == pytest.approx(norm, abs=2e-12)
         assert diag["".join(roles)]["regularized_condition_number"] >= 1
+
+
+def test_packaged_conditional_policy_has_observable_holdouts(tmp_path):
+    demo = Path(__file__).resolve().parents[1] / "examples" / "mixed"
+    args = []
+    for c, kind, ref in zip(
+        "abc", ("protein", "dna", "rna"), ("prot_ref", "dna_ref", "rna_ref"), strict=True
+    ):
+        args.extend(
+            ["--" + c, demo / (kind + ".fasta"), "--" + c + "-type", kind, "--" + c + "-ref", ref]
+        )
+    call(
+        [
+            "analyze",
+            *args,
+            "--matches",
+            demo / "matches.tsv",
+            "--conditional-policy",
+            demo / "conditional.json",
+            "--out",
+            tmp_path / "result",
+        ]
+    )
+    grid = read(tmp_path / "result" / "conditional" / "conditional_summary.json")["grid"]
+    assert all(v["evaluated_folds"] == 4 and v["clade_macro_gain_nats_per_site"] > 0 for v in grid)
