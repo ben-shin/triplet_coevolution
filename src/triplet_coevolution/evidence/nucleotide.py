@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from .identifiers import explicit_accession
+from .provider_policy import allow_request, backoff, checkpoint_keys, policy
 from .uniprot import _retry_delay
 
 ENA = "https://www.ebi.ac.uk/ena/portal/api/search"
@@ -49,7 +50,7 @@ def _request_json(url):
             Request(
                 url, headers={"Accept": "application/json", "User-Agent": "triplet-coevolution"}
             ),
-            timeout=10,
+            timeout=policy().timeout_seconds or 10,
         ) as response:
             content = response.read(_LIMIT + 1)
             if len(content) > _LIMIT:
@@ -102,7 +103,9 @@ class NucleotideResolver:
         if service in self.failures:
             raise ProviderError(self.failures[service])
         interval = {"RNAcentral": 2.1, "NCBI": 0.36, "ENA": 0.2}[service]
-        for attempt in range(2):
+        cfg = policy()
+        for attempt in range(cfg.nucleotide_attempts):
+            allow_request(service)
             delay = self.last_request.get(service, 0) + interval - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
@@ -113,7 +116,14 @@ class NucleotideResolver:
             except HTTPError as exc:
                 if exc.code == 404 and allow_404:
                     return _NOT_FOUND
-                if attempt or exc.code not in {408, 429, 500, 502, 503, 504}:
+                if attempt == cfg.nucleotide_attempts - 1 or exc.code not in {
+                    408,
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                }:
                     raise ProviderError(f"{service} HTTP {exc.code}") from exc
                 try:
                     delay = _retry_delay(exc.headers.get("Retry-After"), attempt)
@@ -123,11 +133,11 @@ class NucleotideResolver:
                     ) from exc
                 if delay > 5:
                     raise ProviderError(f"{service} requests retry after {int(delay)}s") from exc
-                time.sleep(delay)
+                time.sleep(backoff(delay))
             except (OSError, URLError, HTTPException) as exc:
-                if attempt:
+                if attempt == cfg.nucleotide_attempts - 1:
                     raise ProviderError(f"{service} transport error: {exc}") from exc
-                time.sleep(1)
+                time.sleep(backoff(2**attempt))
         raise AssertionError("unreachable")
 
     def _cached(self, prefix, keys, fetch, *, service, size):
@@ -167,6 +177,8 @@ class NucleotideResolver:
                         "status": "provider_unavailable",
                         "provider_error": f"{service}: {self.failures[service]}",
                     }
+            else:
+                checkpoint_keys("nucleotide.sqlite", [prefix + key for key in batch])
         return result
 
     def _ena(self, keys):

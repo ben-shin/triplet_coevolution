@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
+from .gff3 import load_annotations
 from .identifiers import (
     EvidenceRow,
     declared_accessions,
@@ -19,6 +20,7 @@ from .identifiers import (
     lookup_id,
 )
 from .nucleotide import ASSEMBLY, ENA, NCBI, RNACENTRAL, SUMMARY, NucleotideResolver, nucleotide_key
+from .provider_policy import current, request_context
 from .stockholm import local_placement, nucleotide_facts
 from .uniprot import Resolver
 
@@ -234,6 +236,10 @@ def _accession_links(declared, row_id, facts):
             proof = ""
             if explicit_accession(protein) == ac:
                 proof = "matching_primary"
+            elif mapping.get("source_type") == "gff3" and ac in mapping.get("gff3", {}).get(
+                "annotation_ids", ()
+            ):
+                proof = "gff3_explicit_feature_accession"
             elif curated and explicit_accession(lookup) == ac:
                 proof = "curated_accession"
             elif (
@@ -462,6 +468,8 @@ def _collect(
                     and meta["taxon_id"] != mapping["taxon_id"]
                 ):
                     status = "conflicting_stockholm_taxa"
+                if mapping.get("source_type") == "gff3" and mapping["gff3"]["limitations"]:
+                    status = status or mapping["gff3"]["limitations"][0]
                 mapped = {**meta, **mapping}
                 if not curated and meta:
                     if not mapped.get("taxon_id"):
@@ -495,6 +503,8 @@ def _collect(
                 facts,
                 [*verification, *looked_up] if curated else [],
             )
+        if not anchor and (ctx := current()):
+            ctx.advance(len(chunk))
 
 
 def _reconcile_intervals(db):
@@ -776,14 +786,18 @@ def _classify(db, expected, profile_roles, disagreement):
         (SELECT 1 FROM conflicts WHERE conflicts.comp=candidates.comp AND conflicts.protein=candidates.protein)""")
 
 
-def _retain_incomplete_placements(db, expected):
+def _retain_incomplete_placements(db, expected, *, gff3_only=False):
     """Keep possible copies with genome evidence out of role learning but in the group audit."""
-    facts = db.execute("""
+    facts = db.execute(
+        """
         SELECT m.row_key,r.comp,m.protein,m.genome,m.locus,r.present,m.raw,m.status FROM mappings m
         JOIN rows r ON r.id=m.row_key WHERE r.anchor=0 AND m.status!='' AND m.genome!=''
           AND coalesce(json_extract(m.raw,'$.verification_only'),0)=0
+        AND (?=0 OR json_extract(m.raw,'$.source_type')='gff3')
         ORDER BY m.row_key,r.comp,m.protein,m.genome,m.locus,r.present,m.status
-    """)
+    """,
+        (int(gff3_only),),
+    )
     for placement, records in itertools.groupby(facts, key=lambda v: v[:6]):
         key, comp, protein, genome, locus, present = placement
         possible = set()
@@ -793,7 +807,7 @@ def _retain_incomplete_placements(db, expected):
             # apparent molecule's role. Row-scoped or curated roles can exclude it.
             groups = (
                 data.get("orthogroups", ())
-                if data.get("source_type") == "curated"
+                if data.get("source_type") in ("curated", "gff3")
                 else data.get("stockholm_orthogroups", ())
             )
             if _role_status(set(groups), expected[comp]) != "orthogroup_mismatch":
@@ -864,6 +878,7 @@ def _neighborhood_replicon_reasons(labels):
 def _shared_genomic_locus(db, gid):
     """Identify indistinguishable oriented nucleotide loci without collapsing RNA IDs."""
     seen = {}
+    gene_roles = {}
     for comp, raw in db.execute(
         """
         SELECT DISTINCT c.comp,m.raw FROM candidates c JOIN mappings m USING(row_key,protein,genome,locus)
@@ -874,6 +889,11 @@ def _shared_genomic_locus(db, gid):
     ):
         data = json.loads(raw)
         assembly = data.get("canonical_assembly_id") or data.get("assembly_id", "")
+        if data.get("source_type") == "gff3":
+            for gene in data.get("gff3", {}).get("gene_loci", ()):
+                key = assembly, data.get("replicon_id"), gene
+                if gene_roles.setdefault(key, comp) != comp:
+                    return True
         start, end, strand = (
             data.get(k) for k in ("genomic_start", "genomic_end", "genomic_strand")
         )
@@ -1012,7 +1032,68 @@ def _write_table(path, header, rows):
         writer.writerows(rows)
 
 
-def _audit_rows(db, names):
+def _group_context(db, directory):
+    """Count each decision reason once per group and each mapping issue once per row."""
+    db.executescript("""
+        CREATE TEMP TABLE context AS
+        SELECT c.group_id AS gid, min(nullif(m.taxon,'')) AS taxon_id,
+               count(distinct nullif(m.taxon,'')) AS n_taxa
+        FROM candidates c JOIN mappings m USING(row_key,protein,genome,locus)
+        WHERE c.reason!='orthogroup_mismatch' AND m.status=''
+        GROUP BY c.group_id;
+        CREATE UNIQUE INDEX context_key ON context(gid);
+    """)
+
+    def group_rows():
+        for gid, genome, locus, status, tier, taxon, n_taxa in db.execute("""
+            SELECT group_id,genome,locus,status,role_evidence,taxon_id,n_taxa
+            FROM groups JOIN tiers USING(group_id) LEFT JOIN context ON gid=group_id
+            ORDER BY group_id
+        """):
+            yield (gid, genome, locus, status, tier, taxon if n_taxa == 1 else "", n_taxa or 0)
+
+    _write_table(
+        directory / "group_context.tsv",
+        (
+            "group_id",
+            "genome_id",
+            "neighborhood_id",
+            "status",
+            "role_evidence",
+            "taxon_id",
+            "distinct_taxon_ids",
+        ),
+        group_rows(),
+    )
+    reason_counts = {}
+    for (reasons,) in db.execute("SELECT reasons FROM groups WHERE reasons!=''"):
+        for code in reasons.split(";"):
+            reason_counts[code] = 1 + reason_counts.get(code, 0)
+    mapping_counts = dict(
+        db.execute("""
+        SELECT m.status,count(distinct m.row_key) FROM mappings m JOIN rows r ON r.id=m.row_key
+        WHERE r.anchor=0 AND m.status!='' GROUP BY m.status
+    """)
+    )
+    repeated = dict(
+        db.execute("""
+        SELECT comp,count(*) FROM (
+          SELECT DISTINCT c.group_id, c.comp, c.protein
+          FROM candidates c JOIN rows r ON r.id=c.row_key WHERE r.anchor=0 AND r.present=1
+          AND c.reason!='orthogroup_mismatch' AND c.protein!=''
+          AND r.start IS NOT NULL AND r.end IS NOT NULL
+          GROUP BY c.group_id,c.comp,c.protein HAVING count(distinct printf('%d:%d',r.start,r.end))>1
+        ) GROUP BY comp
+    """)
+    )
+    return {
+        "groups_per_reason": reason_counts,
+        "distinct_rows_per_mapping_issue": mapping_counts,
+        "molecules_with_multiple_alignment_intervals_by_role": repeated,
+    }
+
+
+def _audit_rows(db, names, *, gff3=False):
     query = """SELECT c.group_id,g.status,g.reasons,r.comp,r.name,r.present,r.accession,r.start,r.end,
         r.selectors,m.lookup,m.raw,m.status,c.reason,r.declared,r.identity_status FROM mappings m JOIN rows r ON m.row_key=r.id
         LEFT JOIN candidates c ON (m.status='' OR c.incomplete=1) AND coalesce(json_extract(m.raw,'$.verification_only'),0)=0
@@ -1124,6 +1205,7 @@ def _audit_rows(db, names):
             ],
             json.dumps(data.get("assembly_aliases", [])),
             json.dumps(data.get("stockholm_annotations", [])),
+            *((json.dumps(data.get("gff3", {}), sort_keys=True),) if gff3 else ()),
         )
 
 
@@ -1399,6 +1481,11 @@ def generate_evidence(
     molecule_types=None,
     nucleotide_cache=None,
     nucleotide_online=False,
+    gff3=None,
+    provider_policy=None,
+    progress=None,
+    checkpoint=None,
+    total_rows=None,
 ):
     """Write into the caller's staging metadata directory; return evidence_summary.json content."""
     if set(rows) != set(COMPONENTS):
@@ -1417,6 +1504,9 @@ def generate_evidence(
         raise ValueError("unknown evidence component; expected A, B or C")
     out_dir.mkdir(parents=True, exist_ok=True)
     with (
+        request_context(
+            provider_policy, progress, checkpoint=checkpoint, total=total_rows
+        ) as request_state,
         closing(sqlite3.connect("")) as db,
         closing(Resolver(cache, uniprot, audit_errors=automatic)) as resolver,
         (
@@ -1427,6 +1517,7 @@ def generate_evidence(
     ):
         _database(db)
         identity = _load_manifest(db, manifest)
+        gff_sources = load_annotations(db, gff3, molecule_types or {})
         for comp in COMPONENTS:
             options = {
                 "molecule": (molecule_types or {}).get(comp),
@@ -1478,8 +1569,8 @@ def generate_evidence(
                 db, expected, decisions, automatic_profiles, orthology_scope
             )
         _classify(db, expected, profile_roles, disagreement)
-        if automatic:
-            _retain_incomplete_placements(db, expected)
+        if automatic or gff_sources:
+            _retain_incomplete_placements(db, expected, gff3_only=not automatic)
         _summarize_groups(db)
         db.executescript("""
             CREATE TEMP TABLE tiers AS SELECT g.group_id, CASE
@@ -1489,6 +1580,7 @@ def generate_evidence(
             FROM groups g JOIN candidates c USING(group_id) GROUP BY g.group_id;
             CREATE UNIQUE INDEX tiers_group ON tiers(group_id);
         """)
+        attrition = _group_context(db, out_dir)
         tier_fields = ("role_evidence",) if automatic_profiles is not None else ()
         tier_column = ",t.role_evidence" if tier_fields else ""
         _write_table(
@@ -1498,7 +1590,11 @@ def generate_evidence(
                 f"SELECT g.*{tier_column} FROM groups g JOIN tiers t USING(group_id) ORDER BY group_id"
             ),
         )
-        _write_table(out_dir / "evidence.tsv", AUDIT_FIELDS, _audit_rows(db, names))
+        _write_table(
+            out_dir / "evidence.tsv",
+            AUDIT_FIELDS + (("gff3_annotation",) if gff_sources else ()),
+            _audit_rows(db, names, gff3=bool(gff_sources)),
+        )
         _write_table(
             out_dir / "selected_evidence.tsv",
             SELECTED_FIELDS + tier_fields,
@@ -1511,7 +1607,8 @@ def generate_evidence(
         statuses = dict(db.execute("SELECT status,COUNT(*) FROM groups GROUP BY status"))
         resolved = statuses.get("resolved", 0)
         summary = {
-            "schema_version": 1,
+            "schema_version": 2 if gff_sources else 1,
+            **({"gff3_sources": gff_sources} if gff_sources else {}),
             "counts": {
                 "input_rows": db.execute("SELECT COUNT(*) FROM rows WHERE anchor=0").fetchone()[0],
                 "groups": sum(statuses.values()),
@@ -1522,7 +1619,9 @@ def generate_evidence(
                 ).fetchone()[0],
             },
             "group_status_counts": statuses,
+            "attrition": attrition,
             "manifest": identity,
+            "request_policy": request_state.metadata(),
             "component_names": {c: names.get(c, c) for c in COMPONENTS},
             "roles": decisions,
             "orthology_scope": orthology_scope,
@@ -1531,7 +1630,7 @@ def generate_evidence(
                 **resolver.provenance(),
                 "precedence": "exact curated domain, then curated aliases, then UniProt for enabled molecules; declared accessions require independent molecule links",
             },
-            "tables": ["evidence.tsv", "selected_evidence.tsv", "groups.tsv"],
+            "tables": ["evidence.tsv", "selected_evidence.tsv", "groups.tsv", "group_context.tsv"],
         }
         if automatic_profiles is not None:
             summary["role_evidence_counts"] = dict(

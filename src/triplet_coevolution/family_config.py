@@ -29,6 +29,8 @@ PROJECT_FIELDS = {
     "expected_orthogroups",
     "analysis",
     "orthology_scope",
+    "gff3",
+    "providers",
     "analysis_limits",
 }
 
@@ -129,6 +131,18 @@ def family_config(config, directory, *, uniprot=None, default_molecule=None, aut
     for key in ("manifest", "cache", "nucleotide_cache"):
         if key in cfg:
             inputs[key] = cfg[key] = _typed(cfg[key], Path, key, base)
+    from triplet_coevolution.evidence.gff3 import parse_specs
+
+    cfg["gff3"] = parse_specs(cfg.get("gff3"), base)
+    for i, source in enumerate(cfg["gff3"]):
+        inputs[f"gff3.{i}"] = source["path"]
+        if "system_windows" in source:
+            inputs[f"gff3.{i}.system_windows"] = source["system_windows"]
+    from dataclasses import asdict
+
+    from triplet_coevolution.evidence.provider_policy import ProviderPolicy
+
+    cfg["providers"] = asdict(ProviderPolicy.parse(cfg.get("providers")))
     configured_online = _typed(cfg.get("uniprot", automatic), bool, "uniprot", base)
     cfg["uniprot"] = configured_online if uniprot is None else uniprot
     if default_molecule is not None and default_molecule not in ("protein", "dna", "rna"):

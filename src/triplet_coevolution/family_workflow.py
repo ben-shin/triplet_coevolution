@@ -1,6 +1,7 @@
 """Prepare evidence and synchronized, coordinate-preserving subsets of family alignments."""
 
 import csv
+import json
 import sqlite3
 from collections import defaultdict
 from contextlib import ExitStack, closing
@@ -271,6 +272,22 @@ def _prepare(
     _check_output(out)
     options = {"uniprot": uniprot, "default_molecule": molecule, "automatic": automatic}
     cfg, paths, order = family_config(config, directory, **options)
+    if automatic and (generation := cfg["providers"]["cache_generation"]) != "default":
+        cache_directory = cache_directory / generation
+    if (
+        automatic
+        and cfg["uniprot"]
+        and any(
+            cfg.get(key) and cfg[key].resolve() == (cache_directory / filename).resolve()
+            for key, filename in (
+                ("cache", "uniprot.sqlite"),
+                ("nucleotide_cache", "nucleotide.sqlite"),
+            )
+        )
+    ):
+        raise ValueError(
+            "choose a cache directory or generation separate from the pinned input snapshots"
+        )
     if directory is not None or config is None:
         folder = (directory or Path("input")).resolve()
         if out.resolve().is_relative_to(folder):
@@ -331,9 +348,11 @@ def _prepare(
                     comp["transcribe_t"] = decisions[name]["transcribe_t"]
                 references[name] = _reference(inv, comp)
                 selections[name] = _candidates(inv, comp, manifest_ids.get(name, ()))
-            resolver_options = {}
+            resolver_options = {
+                "molecule_types": {n: c["molecule"] for n, c in cfg["components"].items()}
+            }
             if automatic:
-                from triplet_coevolution.automatic_inputs import lookup_snapshot
+                from triplet_coevolution.automatic_inputs import lookup_snapshot, save_lookup_batch
 
                 cache = lookup_snapshot(
                     cfg.get("cache"), cache_directory, metadata, "uniprot.sqlite", cfg["uniprot"]
@@ -350,6 +369,13 @@ def _prepare(
                         cfg["uniprot"],
                     ),
                     "nucleotide_online": cfg["uniprot"],
+                    "checkpoint": (
+                        lambda filename, keys: save_lookup_batch(
+                            metadata, cache_directory, filename, keys
+                        )
+                    )
+                    if cfg["uniprot"]
+                    else None,
                 }
             else:
                 cache = _cache(cfg, metadata)
@@ -357,6 +383,12 @@ def _prepare(
                 selections,
                 metadata,
                 manifest=cfg.get("manifest"),
+                gff3=cfg.get("gff3"),
+                provider_policy=cfg.get("providers"),
+                progress=lambda event: typer.echo(json.dumps(event), err=True),
+                total_rows=sum(inv.n_rows for inv in inventories.values())
+                if all(c["scope"] == "family" for c in cfg["components"].values())
+                else None,
                 uniprot=cfg["uniprot"],
                 cache=cache,
                 expected_orthogroups=cfg["expected_orthogroups"],
@@ -443,6 +475,8 @@ def _prepare(
             "evidence": "metadata/evidence.tsv",
             "selected_evidence": "metadata/selected_evidence.tsv",
             "group_audit": "metadata/groups.tsv",
+            "group_context": "metadata/group_context.tsv",
+            "attrition": result["attrition"],
             "resolver_summary": "metadata/evidence_summary.json",
             "matches": "prepared/matches.tsv",
             "reference_coordinates": "prepared/reference_coordinates.tsv"

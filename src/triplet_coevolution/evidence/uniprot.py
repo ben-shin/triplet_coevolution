@@ -22,6 +22,9 @@ SCHEMA = 1
 MAPPING_SCHEMA = 2
 
 
+from .provider_policy import allow_request, backoff, checkpoint_keys, policy
+
+
 class UniProtError(ValueError):
     """The response or transport failed; a biological absence cannot be inferred."""
 
@@ -72,22 +75,27 @@ def _request(url):
     request = Request(
         url, headers={"Accept": "application/json", "User-Agent": "triplet-coevolution"}
     )
-    for attempt in range(4):
+    cfg = policy()
+    for attempt in range(cfg.uniprot_attempts):
+        allow_request("UniProt")
         try:
-            with urlopen(request, timeout=30) as response:
+            with urlopen(request, timeout=cfg.timeout_seconds or 30) as response:
                 if not isinstance((data := json.load(response)), dict):
                     raise UniProtError("invalid UniProt JSON object")
                 return data, response.headers
         except HTTPError as exc:
-            if exc.code not in (408, 429, 500, 502, 503, 504) or attempt == 3:
+            if (
+                exc.code not in (408, 429, 500, 502, 503, 504)
+                or attempt == cfg.uniprot_attempts - 1
+            ):
                 raise ValueError(
-                    f"UniProt returned HTTP {exc.code} for {url}; no missing-ID inference"
+                    f"UniProt returned HTTP {exc.code}; no missing-ID inference"
                 ) from exc
-            time.sleep(_retry_delay(exc.headers.get("Retry-After"), attempt))
+            time.sleep(backoff(_retry_delay(exc.headers.get("Retry-After"), attempt)))
         except (OSError, URLError, HTTPException) as exc:
-            if attempt == 3:
-                raise ValueError(f"could not reach UniProt at {url}: {exc}") from exc
-            time.sleep(2**attempt)
+            if attempt == cfg.uniprot_attempts - 1:
+                raise ValueError(f"could not reach UniProt ({type(exc).__name__})") from exc
+            time.sleep(backoff(2**attempt))
 
 
 class Resolver:
@@ -96,6 +104,7 @@ class Resolver:
         self.audit_errors = audit_errors
         self.failure = ""
         self.stats = Counter()
+        self.pending_keys = set()
         self.releases = set()
         self.cache_name = cache.name if cache else None
         self.db = None
@@ -298,11 +307,14 @@ class Resolver:
             )
             self._store(identifier, result[identifier])
         self.db.commit()
+        checkpoint_keys("uniprot.sqlite", self.pending_keys)
+        self.pending_keys.clear()
         if failure is not None:
             raise failure
         return result
 
     def _store(self, key, payload):
+        self.pending_keys.add(key)
         self.db.execute(
             "INSERT OR REPLACE INTO lookups VALUES (?,?)",
             (key, json.dumps(payload, sort_keys=True)),

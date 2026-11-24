@@ -85,7 +85,7 @@ def lookup_snapshot(configured, cache_directory, metadata, filename, online):
     return target if source is not None or online else None
 
 
-def _merge(source, target, filename):
+def _merge(source, target, filename, keys=None):
     """Add missing immutable lookup records with concurrent writers serialized by SQLite."""
     table, key = ("lookups", "id") if filename == "uniprot.sqlite" else ("annotations", "key")
     with closing(sqlite3.connect(target, timeout=30, uri=True)) as db, db:
@@ -103,10 +103,20 @@ def _merge(source, target, filename):
             or db.execute("PRAGMA main.user_version").fetchone()[0] != version
         ):
             raise ValueError(f"incompatible schemas for {filename}")
-        db.execute(
+        insert = (
             f"INSERT OR IGNORE INTO main.{table} ({key}, payload) "
             f"SELECT {key}, payload FROM snapshot.{table}"
         )
+        if keys is None:
+            db.execute(insert)
+        else:
+            db.executemany(insert + f" WHERE {key}=?", ((k,) for k in keys))
+
+
+def save_lookup_batch(metadata, cache_directory, filename, keys):
+    """Durably publish each validated provider batch before fetching the next one."""
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    _merge(metadata / filename, cache_directory / filename, filename, keys)
 
 
 def save_snapshots(metadata, cache_directory):

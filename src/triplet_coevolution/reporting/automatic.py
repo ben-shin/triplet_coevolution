@@ -66,6 +66,8 @@ def write_workflow_report(directory, summary):
         )
         if statuses := summary.get("group_status_counts"):
             body.append(_table(["Group decision", "Groups"], statuses.items()))
+        if reasons := summary.get("attrition", {}).get("groups_per_reason"):
+            body.append(_table(["Exclusion reason", "Affected groups"], reasons.items()))
         if issues := summary["providers"].get("lookup_status_counts"):
             body.append(_table(["Lookup or placement issue", "Affected rows"], issues.items()))
         body.append("</section>")
@@ -110,6 +112,7 @@ def write_workflow_report(directory, summary):
     keys = {
         "evidence": "All candidate evidence",
         "group_audit": "Group decisions",
+        "group_context": "Group role evidence and taxonomy",
         "qc_plan": "Blocked analysis plan and QC diagnostics",
         "selected_evidence": "Selected evidence",
         "matches": "Synchronized matches",
