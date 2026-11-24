@@ -53,7 +53,7 @@ def test_interleaved_stockholm_with_bom(tmp_path):
 def test_stockholm_rejects_multiple_alignments(tmp_path, second_record):
   path = tmp_path / "two.sto"
   path.write_text("# STOCKHOLM 1.0\nx AC\n//\n" + second_record)
-  with pytest.raises(ValueError, match="More than one"):
+  with pytest.raises(ValueError, match="multiple Stockholm records"):
     read_msa(path, "A", "dna")
 
 
@@ -94,7 +94,7 @@ def test_empty_file(tmp_path):
 
 # reject unsupported formats
 def test_unsupported_format(tmp_path):
-  path = tmp_path / "alignment.a3m"
+  path = tmp_path / "alignment.unknown"
   path.write_text(">x\nACDE\n")
 
   with pytest.raises(ValueError, match="unsupported"):

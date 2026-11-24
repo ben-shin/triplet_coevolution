@@ -411,6 +411,15 @@ class StockholmInventory:
         ):
             yield self._row(fields)
 
+    def ids(self, *, sorted_names=False) -> Iterator[str]:
+        """Stream just the exact identifiers without fetching per-row annotations."""
+        order = "row_id" if sorted_names else "ordinal"
+        for (row_id,) in self._db.execute(f"SELECT row_id FROM rows ORDER BY {order}"):
+            yield row_id
+
+    def contains(self, row_id):
+        return self._db.execute("SELECT 1 FROM rows WHERE row_id=?", (row_id,)).fetchone() is not None
+
     def row(self, row_id: str) -> StockholmRow | None:
         """Return one exact, case-sensitive row ID, or None."""
         fields = self._db.execute(

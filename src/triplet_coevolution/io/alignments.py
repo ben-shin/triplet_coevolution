@@ -1,115 +1,203 @@
-# read aligned fasta and stockholm files into ComponentMSA objs
+"""Validated, disk-indexed selection of a matched alignment and its reference rows."""
 
-from io import TextIOWrapper
+import os
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-
-from Bio import AlignIO, SeqIO
 
 from triplet_coevolution.core.alignment import ComponentMSA
 from triplet_coevolution.core.alphabets import MoleculeType
+from triplet_coevolution.core.coordinates import (
+    ReferenceCoordinates,
+    build_reference_map,
+    reference_positions,
+)
+from triplet_coevolution.io.fasta_index import allowed_symbols, open_fasta
+from triplet_coevolution.io.stockholm import (
+    _destination,
+    _events,
+    _header,
+    _signature,
+    _source,
+    open_stockholm,
+)
 
-# extensions you can recognize. add more later if necessary
 FILE_FORMATS = {
-  ".fa": "fasta",
-  ".fas": "fasta",
-  ".fasta": "fasta",
-  ".faa": "fasta",
-  ".fna": "fasta",
-  ".ffn": "fasta",
-  ".sto": "stockholm",
-  ".sth": "stockholm",
-  ".stockholm": "stockholm",
+    **dict.fromkeys((".fa", ".fas", ".fasta", ".faa", ".fna", ".ffn"), "fasta"),
+    **dict.fromkeys((".sto", ".sth", ".stockholm"), "stockholm"),
+    ".a3m": "a3m",
 }
+_REMOVE_INSERTIONS = str.maketrans("", "", "abcdefghijklmnopqrstuvwxyz.")
 
 
-class _StockholmStream(TextIOWrapper):
-  """Normalize legal tab separators for Biopython's space-delimited parser."""
+@dataclass(frozen=True)
+class SelectedAlignment:
+    msa: ComponentMSA
+    provenance: dict
+    # Only A3M needs row-specific biological residues outside scoring columns.
+    _raw_a3m: dict[str, str]
 
-  def readline(self, size: int = -1) -> str:
-    return super().readline(size).replace("\t", " ")
-
-
-def _validate_stockholm_record(handle: _StockholmStream) -> None:
-  """Check the record boundaries and leave the stream at its header."""
-  while True:
-    header_offset = handle.tell()
-    line = handle.readline()
-    if line.strip() or not line:
-      break
-  if line.strip() != "# STOCKHOLM 1.0":
-    raise ValueError("missing # STOCKHOLM 1.0 header")
-
-  terminated = False
-  for line in handle:
-    marker = line.strip()
-    if marker == "# STOCKHOLM 1.0":
-      raise ValueError("More than one Stockholm record header")
-    if terminated and marker:
-      raise ValueError("malformed stockholm alignment: unexpected content after // terminator")
-    if marker == "//":
-      terminated = True
-  if not terminated:
-    raise ValueError("incomplete Stockholm alignment: missing // terminator")
-  handle.seek(header_offset)
+    def reference_map(self, reference_id, start=1, *, row_id=None, strand="+"):
+        mapping = build_reference_map(self.msa, reference_id, start, row_id=row_id, strand=strand)
+        if not self._raw_a3m:
+            return mapping
+        raw = self._raw_a3m[reference_id if row_id is None else row_id]
+        physical = reference_positions(raw, start, strand=strand)
+        match_positions = tuple(
+            pos
+            for symbol, pos in zip(raw, physical, strict=True)
+            if symbol != "." and not symbol.islower()
+        )
+        return ReferenceCoordinates(
+            self.msa.name,
+            reference_id,
+            mapping.original_columns,
+            match_positions,
+            mapping.symbols,
+            start,
+            strand,
+        )
 
 
-def read_msa(
-  path: str | Path,
-  name: str,
-  molecule: MoleculeType | str,
-  fmt: str | None = None,
-) -> ComponentMSA:
-  """read aligned fasta/stockholm file, returns validated ComponentMSA"""
+class AlignmentInventory:
+    """Identifiers and source dimensions; the backing store lives until context exit."""
 
-  path = Path(path).expanduser()
+    def __init__(self, index, path, signature, name, molecule, fmt, scratch):
+        self._index = index
+        self._path = path
+        self._signature = signature
+        self._scratch = scratch
+        self.name = name
+        self.molecule = molecule
+        self.format = fmt
+        self.n_rows = index.n_rows
+        self.n_columns = index.n_columns
+        self.raw_symbols = self.n_rows * self.n_columns
+        if fmt == "a3m":
+            self.raw_symbols += index.insert_residues + index.padding_symbols
 
-  # make sure the file actually exists
-  if not path.exists():
-    raise FileNotFoundError(
-      f"alignment file not found: {path}"
-    )
+    def ids(self, *, sorted_names=False):
+        return self._index.ids(sorted_names=sorted_names)
 
-  # determine file format from extension if not specified
-  if fmt is None:
-    fmt = FILE_FORMATS.get(path.suffix.lower())
+    def contains(self, row_id):
+        return self._index.contains(row_id)
 
-  if fmt is None or fmt.lower() not in {"fasta", "stockholm"}:
-    raise ValueError(
-      f"unsupported alignment format for {path}. "
-      "Use .fasta or .sto, or specify fmt='fasta' or 'stockholm'."
-    )
+    def selected_raw_symbols(self, row_ids):
+        if self.format == "a3m":
+            return sum(self._index.raw_width(row_id) for row_id in row_ids)
+        return sum(1 for _ in row_ids) * self.n_columns
 
-  fmt = fmt.lower()
+    def rows(self):
+        return self._index.rows()
 
-  # read all seqs w/ biopython
-  try:
-    if fmt == "stockholm":
-      # Require one alignment, including any interleaved blocks within it.
-      with _StockholmStream(path.open("rb"), encoding="utf-8-sig") as handle:
-        _validate_stockholm_record(handle)
-        records = AlignIO.read(handle, fmt)
-    else:
-      with path.open("r", encoding="utf-8-sig") as handle:
-        records = list(SeqIO.parse(handle, fmt))
-  except AssertionError as exc:
-    # Biopython uses assertions for some malformed Stockholm records.
-    raise ValueError(f"malformed {fmt} alignment {path}: invalid record structure") from exc
-  except ValueError as exc:
-    raise ValueError(
-      f"could not parse {fmt} alignment {path}: {exc}"
-    ) from exc
+    def find(self, identifier):
+        """Yield every metadata alias hit, including separate domains. Selection is exact-ID."""
+        return self._index.find(identifier)
 
-  # reject empty aln files
-  if not records:
-    raise ValueError(
-      f"no sequences found in aln: {path}"
-    )
+    def _check_source(self):
+        if _signature(self._path) != self._signature:
+            raise ValueError(f"alignment input changed while reading {self._path}")
 
-  # construct validated aln obj
-  # duplicate ids, unequal lengths, and invalid symbols are checked by ComponentMSA
-  return ComponentMSA(
-    name=name,
-    molecule=molecule,
-    ids=tuple(record.id for record in records),
-    sequences=tuple(str(record.seq) for record in records),
-  )
+    def select(self, ordered_unique_ids, *, output=None):
+        """Load only requested rows in caller order. An optional derivative keeps source format."""
+        ids = tuple(ordered_unique_ids)
+        if not ids or len(ids) != len(set(ids)):
+            raise ValueError("selection requires nonempty, unique exact row IDs")
+        self._check_source()
+        output = Path(output) if output is not None else None
+        if output is not None and output.resolve() == self._path.resolve():
+            raise ValueError("input and selected output must be distinct paths")
+        compressed = output is not None and output.suffix.lower() == ".gz"
+        raw_a3m = {}
+        with tempfile.TemporaryDirectory(
+            dir=output.parent if output else self._scratch
+        ) as directory:
+            staged = Path(directory) / ("selected.gz" if compressed else "selected")
+            if self.format == "stockholm":
+                self._index.extract(ids, staged)
+                # extract stitches interleaved sequence and annotation tracks on disk.
+                # Its derivative has one complete line per row in the requested order.
+                with _source(staged) as handle:
+                    _header(handle)
+                    seqs = tuple(
+                        value.replace(".", "-")
+                        for _, kind, _, _, value in _events(handle)
+                        if kind == "sequence"
+                    )
+            else:
+                records = self._index.records(ids)
+                if output is not None:
+                    with _destination(staged, compressed) as handle:
+                        for row_id in ids:
+                            title, seq = records[row_id]
+                            handle.write(f"{title}\n")
+                            for i in range(0, len(seq), 80):
+                                handle.write(seq[i : i + 80] + "\n")
+                if self.format == "a3m":
+                    raw_a3m = {row_id: records[row_id][1] for row_id in ids}
+                    seqs = tuple(seq.translate(_REMOVE_INSERTIONS) for seq in raw_a3m.values())
+                else:
+                    seqs = tuple(records[row_id][1] for row_id in ids)
+            msa = ComponentMSA(self.name, self.molecule, ids, seqs)
+            self._check_source()
+            if output is not None:
+                os.replace(staged, output)
+        provenance = {
+            "format": self.format,
+            "selection": "disk_index_exact_id",
+            "source_rows": self.n_rows,
+            "source_columns": self.n_columns,
+            "selected_rows": len(ids),
+            "selected_columns": self.n_columns,
+            "coordinate_space": "a3m_match_columns" if raw_a3m else "source_alignment_columns",
+        }
+        if raw_a3m:
+            provenance.update(
+                a3m_source_insert_residues=self._index.insert_residues,
+                a3m_source_insert_padding=self._index.padding_symbols,
+                a3m_omitted_query_display_tracks=sorted(self._index.display_widths),
+                a3m_selected_insert_residues=sum(
+                    sum(symbol.islower() for symbol in seq) for seq in raw_a3m.values()
+                ),
+            )
+        return SelectedAlignment(msa, provenance, raw_a3m)
+
+
+@contextmanager
+def open_msa(path, name, molecule, fmt=None, *, temp_dir=None):
+    """Validate a whole plain/gzipped source before exposing its temporary row inventory."""
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"alignment file not found: {path}")
+    if name not in ("A", "B", "C"):
+        raise ValueError("component name must be A, B or C")
+    molecule = MoleculeType(molecule)
+    suffix_path = path.with_suffix("") if path.suffix.lower() == ".gz" else path
+    fmt = FILE_FORMATS.get(suffix_path.suffix.lower()) if fmt is None else fmt.lower()
+    if fmt not in ("fasta", "stockholm", "a3m"):
+        raise ValueError(
+            f"unsupported alignment format for {path}; specify fasta, stockholm or a3m"
+        )
+    signature = _signature(path)
+    with tempfile.TemporaryDirectory(dir=temp_dir) as scratch:
+        if fmt == "stockholm":
+            manager = open_stockholm(path, temp_dir=scratch, molecule=molecule.value)
+        else:
+            manager = open_fasta(path, molecule, fmt == "a3m", scratch)
+        with manager as index:
+            if fmt == "stockholm":
+                invalid = index.symbols.difference(map(chr, allowed_symbols(molecule)))
+                if invalid:
+                    raise ValueError(
+                        f"invalid sequence symbol(s) for {molecule.value}: {sorted(invalid)}"
+                    )
+            inventory = AlignmentInventory(index, path, signature, name, molecule, fmt, scratch)
+            inventory._check_source()
+            yield inventory
+
+
+def read_msa(path, name, molecule, fmt=None) -> ComponentMSA:
+    """Read every sequence. For a matched subset or A3M reference map use open_msa instead."""
+    with open_msa(path, name, molecule, fmt) as inventory:
+        return inventory.select(inventory.ids()).msa
