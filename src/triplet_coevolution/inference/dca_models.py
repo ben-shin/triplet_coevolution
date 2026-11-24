@@ -14,6 +14,7 @@ from triplet_coevolution.inference.potts import (
     MAX_DUAL_ELEMENTS,
     MAX_SOLVE_DIMENSION,
     direct_couplings,
+    factor_backend,
 )
 
 
@@ -26,6 +27,7 @@ class DCADesign:
     shrinkage: float = 0.0
     alphabet_support: str = "observed"
     plm: dict = field(default_factory=dict)
+    factor_solver: str = "numpy_legacy"
 
     def __post_init__(self):
         if self.backend not in {"mf", "plm"} or self.conditioning not in {"joint", "pairwise"}:
@@ -48,11 +50,15 @@ class DCADesign:
         if self.backend == "mf" and self.plm:
             raise ValueError("plm optimizer options require backend=plm")
         if self.backend == "plm":
+            if self.factor_solver != "numpy_legacy":
+                raise ValueError("factor_solver applies only to mf DCA")
             if self.ridge != 0.1 or self.shrinkage or self.alphabet_support != "fixed":
                 raise ValueError(
                     "PLM uses a fixed alphabet and its own lambda_h/lambda_j rather than mf ridge/shrinkage"
                 )
             self.plm_options()
+        elif self.factor_solver not in ("numpy_legacy", "cholesky"):
+            raise ValueError("mf factor_solver must be numpy_legacy or cholesky")
 
     def plm_options(self):
         from triplet_coevolution.inference.plm import PLMOptions
@@ -88,6 +94,8 @@ class DCADesign:
 
     def metadata(self):
         data = asdict(self)
+        if self.factor_solver == "numpy_legacy":
+            del data["factor_solver"]
         if self.backend == "plm":
             data.pop("ridge")
             data.pop("shrinkage")
@@ -110,6 +118,11 @@ class DCADesign:
                 diagnostics=diagnostics,
                 min_valid=min_valid,
                 min_valid_weight=min_valid_weight,
+                **(
+                    {"factor_solver": self.factor_solver}
+                    if self.factor_solver != "numpy_legacy"
+                    else {}
+                ),
             )
         from triplet_coevolution.inference.plm import fit_plm
 
@@ -131,6 +144,7 @@ class DCADesign:
 
             return plm_preflight(msa, self.plm_options(), conditioning=self.conditioning)
         n = msa.n_observations
+        factor_backend(self.factor_solver)
         dims = {}
         for comp in msa.components:
             q = len(CANONICAL[comp.molecule]) + self.include_gaps
@@ -154,6 +168,7 @@ class DCADesign:
                 "features": d,
                 "solver": "dual" if dual else "primal",
                 "estimated_numeric_bytes": space,
+                "factor_solver": self.factor_solver,
             }
         return {
             "scopes": details,

@@ -1,7 +1,7 @@
 # weighted mi and apc for matched msa comps
 
 from dataclasses import dataclass
-from math import fsum
+from math import frexp, fsum, isqrt
 from typing import Literal
 
 import numpy as np
@@ -231,7 +231,67 @@ def apc(scores: np.ndarray) -> np.ndarray:
     result.setflags(write=False)
     return result
 
+def _mi_from_counts(counts, weight):
+    joint = counts / np.where(weight, weight, 1)[:, None, None]
+    expected = joint.sum(axis=1, keepdims=True) * joint.sum(axis=2, keepdims=True)
+    occupied = joint > 0
+    terms = np.zeros_like(joint)
+    np.divide(joint, expected, out=terms, where=occupied)
+    np.log2(terms, out=terms, where=occupied)
+    return np.maximum((joint * terms).sum(axis=(1, 2)), 0.0)
+
+
+def _packed_unit_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weight):
+    """Exact low-alphabet contingency counts with a common power-of-two positive weight."""
+    n = len(row_weights)
+    words = (n + 63) // 64
+    pair_words = words * q_a * q_b
+    if (
+        not hasattr(np, "bitwise_count")
+        or n < 512
+        or q_a * q_b > 25
+        or pair_words > 131072
+        or a.n_sites * b.n_sites < 64
+    ):
+        return False
+    positive = row_weights > 0
+    scale = float(row_weights.max())
+    if frexp(scale)[0] != 0.5 or not np.all((row_weights == scale) | ~positive):
+        return False
+    # A power-of-two weight can be multiplied by the integer count exactly.
+    # Source weight checks exclude overflow. Uniform non-dyadic weights keep
+    # the original per-observation accumulation to preserve its rounding.
+    tile = max(1, isqrt(131072 // pair_words))
+
+    def planes(matrix, cols, q):
+        values = matrix[:, cols].T
+        packed = np.zeros((len(values), q, words), dtype=np.uint64)
+        octets = packed.view(np.uint8)
+        for state in range(q):
+            bits = np.packbits((values == state) & positive, axis=1)
+            octets[:, state, : bits.shape[1]] = bits
+        return packed
+
+    for i in range(0, a.n_sites, tile):
+        x = slice(i, i + tile)
+        left = planes(a.matrix, x, q_a)
+        for j in range(0, b.n_sites, tile):
+            y = slice(j, j + tile)
+            right = planes(b.matrix, y, q_b)
+            shared = left[:, None, :, None] & right[None, :, None, :]
+            count = np.bitwise_count(shared).sum(axis=-1, dtype=np.int64)
+            support = count.sum(axis=(-1, -2))
+            weight = support * scale
+            cells = count.reshape(-1, q_a, q_b) * scale
+            score = _mi_from_counts(cells, weight.ravel()).reshape(support.shape)
+            n_valid[x, y], valid_weight[x, y] = support, weight
+            mi[x, y] = np.where(support >= min_valid, score, np.nan)
+    return True
+
+
 def _batched_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weight):
+    if _packed_unit_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weight):
+        return
     # Several column pairs share each bincount call. Each receives a separate
     # range of joint-state bins and one discarded bin for excluded observations.
     n = a.n_sequences
@@ -256,17 +316,8 @@ def _batched_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weigh
             counts = np.bincount(
                 indices.ravel(), weights=tiled_weights[: size * n], minlength=size * (states + 1)
             ).reshape(size, states + 1)
-            joint = (
-                counts[:, :states].reshape(size, q_a, q_b)
-                / np.where(weight, weight, 1)[:, None, None]
-            )
-            expected = joint.sum(axis=1, keepdims=True) * joint.sum(axis=2, keepdims=True)
-            occupied = joint > 0
-            terms = np.zeros_like(joint)
-            np.divide(joint, expected, out=terms, where=occupied)
-            np.log2(terms, out=terms, where=occupied)
-            bits = (joint * terms).sum(axis=(1, 2))
-            mi[i, cols] = np.where(n_valid[i, cols] >= min_valid, np.maximum(bits, 0.0), np.nan)
+            bits = _mi_from_counts(counts[:, :states].reshape(size, q_a, q_b), weight)
+            mi[i, cols] = np.where(n_valid[i, cols] >= min_valid, bits, np.nan)
 
 
 def mutual_information_block(

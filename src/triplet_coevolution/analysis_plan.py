@@ -331,6 +331,10 @@ def estimate_model(
     peak_dca = dca_bytes + 2 * array_bytes if dca else 0
     max_states = math.prod(max(1, int(states[c].max())) for c in "ABC")
     peak_triples = (candidates * 256 + max_states * 96) if threebody else 0
+    if threebody and threebody_model == "local":
+        from triplet_coevolution.inference.threebody import triple_row_workspace
+
+        peak_triples += triple_row_workspace(n, tuple(widths.values()), candidates)
     if threebody:
         peak_triples += screened_probes * 80
         if local_details:

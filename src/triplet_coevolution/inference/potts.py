@@ -29,6 +29,18 @@ class DCABlock:
     valid_weight: np.ndarray
 
 
+def factor_backend(factor_solver):
+    if factor_solver == "numpy_legacy":
+        return None
+    if factor_solver != "cholesky":
+        raise ValueError("mf factor_solver must be numpy_legacy or cholesky")
+    try:
+        from scipy import linalg
+    except ImportError as exc:
+        raise ValueError("mf factor_solver=cholesky requires the optimize extra (SciPy)") from exc
+    return linalg
+
+
 def direct_couplings(
     msa: MatchedTripletMSA,
     weights: SequenceWeightResult | np.ndarray | None = None,
@@ -41,6 +53,7 @@ def direct_couplings(
     alphabet_support: str = "observed",
     shrinkage: float = 0.0,
     diagnostics: dict | None = None,
+    factor_solver: str = "numpy_legacy",
 ) -> dict[str, DCABlock]:
     """Fit ridge inverse covariance jointly or on each two-component conditioning panel."""
     if not np.isfinite(ridge) or ridge <= 0:
@@ -60,6 +73,7 @@ def direct_couplings(
     ):
         raise ValueError("include_gaps must be Boolean and shrinkage a fraction in [0,1]")
     sets = [(0, 1, 2)] if conditioning == "joint" else PAIRS
+    factors = factor_backend(factor_solver)
     results = {}
     for indices in sets:
         subset = [msa.components[i] for i in indices]
@@ -75,6 +89,7 @@ def direct_couplings(
                 alphabet_support,
                 shrinkage,
                 info,
+                factors,
             )
         )
         if info is not None:
@@ -92,6 +107,7 @@ def _ridge_fit(
     alphabet_support,
     shrinkage,
     info,
+    factors,
 ):
     sites = []
     contrast_indices = []
@@ -162,6 +178,7 @@ def _ridge_fit(
             shrinkage=shrinkage,
             effective_diagonal_penalty=penalty,
             rank_scope="spectrum of scaled covariance before diagonal penalty",
+            factor_solver="cholesky" if factors is not None else "numpy_legacy",
         )
         if matrix.shape[0] > 512:
             info["spectrum_status"] = "not_computed_over_512_dimensions"
@@ -189,6 +206,17 @@ def _ridge_fit(
         design *= scaled_weights[rows, None]
         return design
 
+    def probe_columns():
+        # First, last, and (for a wider panel) two spaced interior right-hand sides.
+        return np.linspace(0, width - 1, min(4, width), dtype=int)
+
+    def record_residual(indices, actual, expected):
+        denominator = max(float(np.linalg.norm(expected)), np.finfo(float).tiny)
+        info["factor_probe_columns_zero_based"] = indices.tolist()
+        info["factor_probe_relative_frobenius_residual"] = float(
+            np.linalg.norm(actual - expected) / denominator
+        )
+
     if dual:
         # For disjoint site blocks, -precision_ij = U_i.T @ U_j. This is
         # exactly the same ridge inverse via Woodbury in observation space.
@@ -196,7 +224,17 @@ def _ridge_fit(
         gram = design @ design.T
         spectrum(gram)
         gram.flat[:: n + 1] += penalty
-        features = np.linalg.solve(np.linalg.cholesky(gram), design) / np.sqrt(penalty)
+        if factors is None:
+            features = np.linalg.solve(np.linalg.cholesky(gram), design) / np.sqrt(penalty)
+        else:
+            lower, _ = factors.cho_factor(gram, lower=True, check_finite=False)
+            features = factors.solve_triangular(lower, design, lower=True, check_finite=False)
+            if info is not None:
+                indices = probe_columns()
+                actual = factors.blas.dtrmm(1.0, lower, features[:, indices], lower=1)
+                record_residual(indices, actual, design[:, indices])
+            features /= np.sqrt(penalty)
+            del lower
         del design, gram
     else:
         covariance = np.zeros((width, width))
@@ -207,7 +245,18 @@ def _ridge_fit(
         spectrum(covariance)
         if width:
             covariance.flat[:: width + 1] += penalty
-        precision = np.linalg.inv(covariance) if width else covariance
+        if width and factors is not None:
+            cholesky = factors.cho_factor(covariance, lower=True, check_finite=False)
+            precision = factors.cho_solve(cholesky, np.eye(width), check_finite=False)
+            if info is not None:
+                indices = probe_columns()
+                actual = covariance @ precision[:, indices]
+                expected = np.zeros_like(actual)
+                expected[indices, np.arange(len(indices))] = 1
+                record_residual(indices, actual, expected)
+            del cholesky
+        else:
+            precision = np.linalg.inv(covariance) if width else covariance
 
     results = {}
     for a, b in combinations(range(len(components)), 2):

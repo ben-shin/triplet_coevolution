@@ -167,6 +167,14 @@ class _ComponentComparisons:
             equal &= ~(bit[:, left, None] ^ bit[:, None, right])
         return _counts(equal), _counts(both)
 
+    def compare_pairs(self, left, right):
+        """Compare corresponding row pairs, without a Cartesian product."""
+        both = self.valid[:, left] & self.valid[:, right]
+        equal = both.copy()
+        for bit in self.bits:
+            equal &= ~(bit[:, left] ^ bit[:, right])
+        return _counts(equal), _counts(both)
+
 
 def _parts(msa, policy, component):
     if policy not in POLICIES:
@@ -247,6 +255,7 @@ def _workspace(parts, policy, memory_budget_bytes, reuse):
         "component_count": len(parts),
         "row_pair_slots_per_pass": pair_slots,
         "component_word_slots_per_uncached_pass": word_slots,
+        "word_slots_scope": "Dense upper bound before exact identity upper-bound pruning.",
         "scope": "Conservative numerical array estimate for one weighting calculation; Python objects, existing alignment strings and other workflow stages excluded.",
     }
 
@@ -355,6 +364,45 @@ class _WeightComparisons:
             for other in range(start, self.n, self.block):
                 yield left, slice(other, min(other + self.block, self.n))
 
+    def _sparse_neighbors(
+        self,
+        numerator,
+        denominator,
+        eligible,
+        left,
+        right,
+        remaining,
+        identity_threshold,
+        min_overlap,
+    ):
+        # Every remaining component contributes at most one to the sum of
+        # component identities. Both integer ratios are <= 2**53 before division:
+        # rounding the upper bound cannot exclude an inclusive threshold tie.
+        count = self.n_components
+        possible = eligible & (
+            (numerator + (count - 1) * denominator) / (count * np.maximum(denominator, 1))
+            >= identity_threshold
+        )
+        if np.count_nonzero(possible) * 8 > possible.size:
+            return None
+        i, j = np.nonzero(possible)
+        if not len(i):
+            return possible
+        x, y = left.start + i, right.start + j
+        num, den = numerator[i, j], denominator[i, j]
+        supported = np.ones(len(i), dtype=bool)
+        for part, order in remaining:
+            a, b = (x, y) if order is None else (order[x], order[y])
+            if part.cache is None:
+                matches, overlap = part.compare_pairs(a, b)
+            else:
+                matches, overlap = part.cache[0, a, b], part.cache[1, a, b]
+            num = num * overlap + matches * den
+            den *= overlap
+            supported &= (overlap > 0) & (overlap / part.length >= min_overlap)
+        possible[i, j] = supported & (num / (count * np.maximum(den, 1)) >= identity_threshold)
+        return possible
+
     def weights(self, identity_threshold, min_overlap, components=None, *, observation_ids=()):
         clusters = _Clusters(self.n) if self.policy == "cluster_representatives" else None
         pooled = self.policy == "concatenated"
@@ -367,6 +415,18 @@ class _WeightComparisons:
             if components is not None
             else [None] * self.n_components
         )
+        comparisons = list(zip(self.parts, orders, strict=True))
+        sparse = (
+            not pooled
+            and self.dtype == np.int64
+            and self.n_components > 1
+            and identity_threshold > (self.n_components - 1) / self.n_components
+            and self.n >= 256
+        )
+        if sparse:
+            # First evaluate a cheap component. Changing the order of additions
+            # to the exact integer numerator/denominator leaves the final ratio identical.
+            comparisons.sort(key=lambda item: item[0].valid.shape[0] * (len(item[0].bits) + 1))
         neighbors = np.zeros(self.n, dtype=np.int64)
         for left, right in self.blocks():
             shape = (left.stop - left.start, right.stop - right.start)
@@ -375,7 +435,7 @@ class _WeightComparisons:
             if pooled:
                 denominator.fill(0)
             eligible = np.ones(shape, dtype=bool)
-            for part, order in zip(self.parts, orders, strict=True):
+            for part_index, (part, order) in enumerate(comparisons):
                 x, y = (left, right) if order is None else (order[left], order[right])
                 if part.cache is None:
                     matched, overlap = part.compare(x, y)
@@ -391,16 +451,31 @@ class _WeightComparisons:
                     numerator = numerator * overlap + matched * denominator
                     denominator *= overlap
                     eligible &= (overlap > 0) & (overlap / part.length >= min_overlap)
-            if pooled:
-                eligible &= (denominator > 0) & (
-                    denominator / sum(p.length for p in self.parts) >= min_overlap
-                )
-                scale = 1
+                    if sparse and part_index == 0 and eligible.size >= 256:
+                        selected = self._sparse_neighbors(
+                            numerator,
+                            denominator,
+                            eligible,
+                            left,
+                            right,
+                            comparisons[1:],
+                            identity_threshold,
+                            min_overlap,
+                        )
+                        if selected is not None:
+                            eligible = selected
+                            break
             else:
-                scale = self.n_components
-            eligible[eligible] = (
-                numerator[eligible] / (denominator[eligible] * scale) >= identity_threshold
-            )
+                if pooled:
+                    eligible &= (denominator > 0) & (
+                        denominator / sum(p.length for p in self.parts) >= min_overlap
+                    )
+                    scale = 1
+                else:
+                    scale = self.n_components
+                eligible[eligible] = (
+                    numerator[eligible] / (denominator[eligible] * scale) >= identity_threshold
+                )
             if left.start == right.start:
                 np.fill_diagonal(eligible, True)
             else:

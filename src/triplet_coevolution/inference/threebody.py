@@ -1,6 +1,7 @@
 """Three-site categorical models and score-independent candidate selection."""
 
 from dataclasses import dataclass
+from functools import lru_cache
 from math import prod
 from random import Random
 
@@ -48,6 +49,18 @@ def _entropy(p: np.ndarray) -> float:
     return float(-np.sum(p * np.log2(p)))
 
 
+def _cache_sites(n):
+    return min(4096, (2 * 1024**2) // (3 * n))
+
+
+def triple_row_workspace(n, widths, candidates):
+    """Bound cached int16 codes, canonical masks and per-candidate row temporaries in bytes."""
+    if n <= 0 or candidates <= 0:
+        return 0
+    stored = min(_cache_sites(n), sum(widths), 3 * candidates)
+    return n * (3 * stored + 80)
+
+
 def fit_triples(
     msa: MatchedTripletMSA,
     candidates,
@@ -62,9 +75,21 @@ def fit_triples(
         raise ValueError("three-body pseudocount must be finite and positive")
     min_valid = _check_min_valid(min_valid)
     min_valid_weight = check_min_valid_weight(min_valid_weight)
-    w = _get_weights(weights, msa.n_observations,msa)
+    w = _get_weights(weights, msa.n_observations, msa)
     matrices = tuple(c.matrix for c in msa.components)
     alphabets = tuple(len(CANONICAL[c.molecule]) for c in msa.components)
+    full_cells = prod(alphabets)
+    strides = (alphabets[1] * alphabets[2], alphabets[2], 1)
+    # Cached int16 mixed-radix contributions and Boolean canonical masks only.
+    # Cap both data bytes and Python cache entries, even for a generator of all triples.
+    max_sites = _cache_sites(msa.n_observations)
+    positive = w > 0
+
+    @lru_cache(maxsize=max_sites)
+    def site(role, column):
+        values = matrices[role][:, column]
+        return values * strides[role], (values >= 0) & (values < alphabets[role])
+
     results = []
     for triple in candidates:
         if len(triple) != 3 or any(
@@ -74,19 +99,40 @@ def fit_triples(
             for j, matrix in zip(triple, matrices)
         ):
             raise ValueError("triple candidates must be three valid zero-based column indices")
-        columns = [matrix[:, j] for j, matrix in zip(triple, matrices)]
-        valid = w > 0
-        for x, q in zip(columns, alphabets):
-            valid &= (x >= 0) & (x < q)
+        a, b, c = (site(role, int(column)) for role, column in enumerate(triple))
+        valid = positive & a[1] & b[1] & c[1]
         n = int(valid.sum())
-        weight = canonical_support_at_cutoff(float(w[valid].sum()),valid,w,min_valid_weight)
+        valid_weights = w[valid]
+        weight = canonical_support_at_cutoff(float(valid_weights.sum()), valid, w, min_valid_weight)
         if n == 0:
             results.append(TripleScore(np.nan, np.nan, 0, 0.0, 0, 0))
             continue
-        recoded = [np.unique(x[valid], return_inverse=True)[1] for x in columns]
-        shape = tuple(int(x.max()) + 1 for x in recoded)
-        index = np.ravel_multi_index(recoded, shape)
-        counts = np.bincount(index, weights=w[valid], minlength=prod(shape)).reshape(shape)
+        if full_cells <= max(512, 4 * n):
+            # A bincount in canonical state order accumulates every occupied cell
+            # in its original row order. Remove absent marginal states *after*
+            # counting to preserve the local observed-state prior and gauge.
+            index = (a[0] + b[0] + c[0])[valid]
+            counts = np.bincount(index, weights=valid_weights, minlength=full_cells).reshape(
+                alphabets
+            )
+            present = tuple(counts.any(axis=axes) for axes in ((1, 2), (0, 2), (0, 1)))
+            if not all(mask.all() for mask in present):
+                counts = counts[np.ix_(*present)]
+        else:
+            # Shallow, high-alphabet tables can have very sparse effective support.
+            columns = [matrix[:, j] for j, matrix in zip(triple, matrices)]
+            recoded = []
+            for x, q in zip(columns, alphabets, strict=True):
+                values = x[valid]
+                if n < 64:
+                    codes = np.unique(values, return_inverse=True)[1]
+                else:
+                    present = np.bincount(values, minlength=q) > 0
+                    codes = (np.cumsum(present) - 1)[values]
+                recoded.append(codes)
+            shape = tuple(int(x.max()) + 1 for x in recoded)
+            index = np.ravel_multi_index(recoded, shape)
+            counts = np.bincount(index, weights=valid_weights, minlength=prod(shape)).reshape(shape)
         observed = int(np.count_nonzero(counts))
         if n < min_valid or weight < min_valid_weight:
             results.append(TripleScore(np.nan, np.nan, n, weight, observed, counts.size))
