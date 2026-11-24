@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 
 COMPONENTS = ("A", "B", "C")
-BACKENDS = {"reference", "hmmer", "infernal", "psiblast"}
+
 ANALYSIS_TYPES = {
     "min_coverage": float,
     "max_gap_fraction": float,
@@ -95,12 +95,14 @@ def _typed(value, kind, name, base):
 
 
 def load_config(path: Path, mode: str) -> dict:
+    from triplet_coevolution.search.discovery_config import SEARCH_KEYS, validate_search_component
+
     base = path.absolute().parent
     cfg = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_unique)
     required = {"schema_version", "components", "evidence"}
     _keys(cfg, required, required | {"paralogs"} | ({"analysis"} if mode == "run" else set()), mode)
-    if type(cfg["schema_version"]) is not int or cfg["schema_version"] != 1:
-        raise ValueError("expected schema_version 1")
+    if type(cfg["schema_version"]) is not int or cfg["schema_version"] not in (1, 2):
+        raise ValueError("expected schema_version 1 or 2")
     cfg["evidence"] = _typed(cfg["evidence"], Path, "evidence", base)
     policy = cfg.setdefault("paralogs", "exclude")
     if policy not in ("exclude", "priority"):
@@ -112,18 +114,11 @@ def load_config(path: Path, mode: str) -> dict:
         )
         optional = {"reference_start"}
         if mode == "prepare":
-            optional.add("reference_row_id")
+            optional.update(("reference_row_id", "reference_strand", "format"))
         if mode == "run":
-            optional |= {
-                "backend",
-                "profile",
-                "min_identity",
-                "min_coverage",
-                "evalue",
-                "iterations",
-            }
+            optional.update(SEARCH_KEYS)
         _keys(comp, fields, fields | optional, name)
-        for key in ("alignment", "reference", "database", "profile"):
+        for key in ("alignment", "reference", "database"):
             if key in comp:
                 comp[key] = _typed(comp[key], Path, f"{name}.{key}", base)
         if comp["molecule"] not in ("protein", "dna", "rna"):
@@ -135,35 +130,20 @@ def load_config(path: Path, mode: str) -> dict:
         if type(start) is not int or start < 1:
             raise ValueError(f"{name}.reference_start must be a positive integer")
         if mode == "prepare":
+            strand = comp.setdefault("reference_strand", "+")
+            if strand not in ("+", "-") or strand == "-" and comp["molecule"] == "protein":
+                raise ValueError(f"{name}.reference_strand requires + or a nucleotide - strand")
+            if "format" in comp and comp["format"] not in ("fasta", "a3m", "stockholm"):
+                raise ValueError(f"{name}.format must be fasta, a3m, or stockholm")
             continue
-        backend = comp.setdefault("backend", "reference")
-        if not isinstance(backend, str) or backend not in BACKENDS:
-            raise ValueError(f"{name}.backend must be one of {sorted(BACKENDS)}")
-        if backend == "reference":
-            if any(key in comp for key in ("profile", "evalue", "iterations")):
-                raise ValueError(f"{name}: reference search uses min_identity and min_coverage")
-            for key, default in (("min_identity", 0.5), ("min_coverage", 0.7)):
-                value = _typed(comp.setdefault(key, default), float, f"{name}.{key}", base)
-                if not 0 < value <= 1:
-                    raise ValueError(f"{name}.{key} must be in (0, 1]")
-        else:
-            if "min_identity" in comp or "min_coverage" in comp:
-                raise ValueError(f"{name}: profile searches use evalue, not identity or coverage")
-            if backend in ("infernal", "hmmer") and "profile" not in comp:
-                raise ValueError(f"{name}.{backend} requires profile")
-            if backend == "infernal" and comp["molecule"] != "rna":
-                raise ValueError("infernal requires an RNA component")
-            if backend == "psiblast" and comp["molecule"] != "protein":
-                raise ValueError("psiblast requires a protein component")
-            if backend != "psiblast" and "iterations" in comp:
-                raise ValueError("iterations applies only to psiblast")
-            if backend == "psiblast":
-                iterations = comp.setdefault("iterations", 3)
-                if type(iterations) is not int or iterations < 1:
-                    raise ValueError("iterations must be a positive integer")
-            value = _typed(comp.setdefault("evalue", 0.01), float, f"{name}.evalue", base)
-            if value <= 0:
-                raise ValueError("evalue must be positive")
+        old_keys = {"backend", "min_identity", "min_coverage", "profile", "evalue", "iterations"}
+        legacy = (
+            cfg["schema_version"] == 1
+            and comp.get("backend", "reference") in ("reference", "hmmer", "infernal", "psiblast")
+            and not (comp.keys() & (SEARCH_KEYS - old_keys))
+        )
+        validate_search_component(comp, name, base)
+        comp["discovery_version"] = 1 if legacy else 2
     if mode == "run":
         analysis = cfg.setdefault("analysis", {})
         _keys(analysis, (), ANALYSIS_TYPES, "analysis")

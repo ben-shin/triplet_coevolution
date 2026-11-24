@@ -29,19 +29,39 @@ class QCBlocked(MissingRowSupport):
 
 
 def input_cells(paths):
-    """Count source sequence symbols with a streaming pass before native MSA materialization."""
+    """Count raw sequence symbols. For matched working sets use the public plan command."""
+    import gzip
+
     counts = {}
     for name in "ABC":
-        path = paths[name]
-        form = FILE_FORMATS.get(path.suffix.lower())
+        path = Path(paths[name])
+        name_path = path.with_suffix("") if path.suffix.lower() == ".gz" else path
+        form = FILE_FORMATS.get(name_path.suffix.lower())
         if form is None:
             raise ValueError(f"unsupported alignment format for {path}")
         total = 0
-        with path.open(encoding="utf-8-sig") as stream:
+        with path.open("rb") as binary:
+            opener = gzip.open if binary.read(2) == b"\x1f\x8b" else open
+        display = False
+        with opener(path, "rt", encoding="utf-8-sig") as stream:
             for raw in stream:
                 line = raw.strip()
-                if form == "fasta":
-                    if line and not line.startswith((">", ";", "#", "!")):
+                if form in ("fasta", "a3m"):
+                    if line.startswith(">"):
+                        identifier = line[1:].split(maxsplit=1)
+                        display = (
+                            form == "a3m"
+                            and bool(identifier)
+                            and identifier[0]
+                            in {
+                                "ss_pred",
+                                "ss_conf",
+                                "ss_dssp",
+                                "sa_dssp",
+                                "ss_cons",
+                            }
+                        )
+                    if line and not display and not line.startswith((">", ";", "#", "!")):
                         total += len("".join(line.split()))
                 elif line and not line.startswith("#") and line != "//":
                     tokens = line.split()

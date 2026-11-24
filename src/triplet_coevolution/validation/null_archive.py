@@ -10,9 +10,9 @@ import numpy as np
 from triplet_coevolution.inference.candidates import candidate_id
 from triplet_coevolution.inference.maxent import FrozenSupport, MaxEntOptions
 from triplet_coevolution.inference.weights import SequenceWeightResult
-from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.metadata import read_triplet_table
 from triplet_coevolution.io.score_store import file_digest, load_score_store
+from triplet_coevolution.io.selected_sources import matched_sources
 from triplet_coevolution.msa.masking import apply_triplet_masks
 from triplet_coevolution.msa.synchronize import synchronize
 
@@ -78,8 +78,20 @@ class RefitData:
                     )
             table = read_triplet_table(paths["matches"])
             records = {m.observation_id: m for m in table.matches}
-            parts = [read_msa(paths[k], k, prov["components"][k]["molecule_type"]) for k in "ABC"]
-            synced = synchronize(*parts, [records[key] for key in ids])
+            comp = prov["components"]
+            kept = [records[key] for key in ids]
+            src = matched_sources(
+                paths,
+                kept,
+                {c: v["molecule_type"] for c, v in comp.items()},
+                {c: v["reference_id"] for c, v in comp.items()},
+                row_references={c: v.get("reference_row_id") for c, v in comp.items()},
+                starts={c: v["reference_start"] for c, v in comp.items()},
+                strands={c: v.get("reference_strand", "+") for c, v in comp.items()},
+                formats={c: v["format"] for c, v in prov.get("source_selection", {}).items()},
+            )
+            parts = src.components
+            synced = synchronize(*parts, kept)
             masks = []
             for c, m in zip(parts, store.maps, strict=True):
                 mask = np.zeros(c.n_sites, dtype=bool)

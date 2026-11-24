@@ -21,7 +21,6 @@ from triplet_coevolution.analysis_plan import (
     AnalysisBudgetError,
     QCBlocked,
     estimate_model,
-    input_cells,
     match_metadata,
     publish_plan,
     replay_arguments,
@@ -35,15 +34,14 @@ from triplet_coevolution.conditional_workflow import (
     conditional_design,
     write_conditional,
 )
-from triplet_coevolution.core.coordinates import build_reference_map
 from triplet_coevolution.dca_compare import dca_compare
 from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
 from triplet_coevolution.inference.scores import get_score, mi_with_apc_policy, pair_coverage
 from triplet_coevolution.inference.weights import sequence_weights
-from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.export import write_triplet_mi_tables
 from triplet_coevolution.io.metadata import read_triplet_table
+from triplet_coevolution.io.selected_sources import InputBudgetError, matched_sources
 from triplet_coevolution.msa.support import site_masks
 from triplet_coevolution.msa.synchronize import synchronize
 from triplet_coevolution.provenance import file_hashes
@@ -141,7 +139,9 @@ def _stage_run(out: Path) -> Iterator[Path]:
                     "score_manifest.json",
                     "plan.json",
                 )
-                final_manifest = next((stage / name for name in marker_names if (stage / name).exists()), None)
+                final_manifest = next(
+                    (stage / name for name in marker_names if (stage / name).exists()), None
+                )
                 artifacts = sorted(
                     stage.rglob("*"), key=lambda p: (p == final_manifest, p.name in marker_names, p)
                 )
@@ -486,6 +486,18 @@ def analyze(
             "--dca-policy", help="DCA feature, regularization, solver and budget policy JSON."
         ),
     ] = None,
+    a_format: Annotated[
+        str | None,
+        typer.Option("--a-format", help="Aligned input format override (fasta, stockholm, a3m)."),
+    ] = None,
+    b_format: Annotated[
+        str | None,
+        typer.Option("--b-format", help="Aligned input format override (fasta, stockholm, a3m)."),
+    ] = None,
+    c_format: Annotated[
+        str | None,
+        typer.Option("--c-format", help="Aligned input format override (fasta, stockholm, a3m)."),
+    ] = None,
 ) -> dict | None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     options = locals().copy()
@@ -643,43 +655,41 @@ def analyze(
         if dca_policy and stamps["dca_policy"] != policy_stamp:
             raise ValueError("DCA policy changed while reading")
         inputs = {key: _input_identity(path) for key, path in paths.items()}
-        if budget is not None:
-            cells = input_cells(paths)
-            if sum(cells.values()) > budget:
-                why = f"Source alignments contain {sum(cells.values())} sequence symbols and exceed the numeric-workspace budget of {budget} bytes before encoding. Use a preselected input panel."
-                if dry_run:
-                    publish_plan(
-                        out,
-                        {
-                            "schema_version": 1,
-                            "status": "blocked",
-                            "blockers": [{"method": "inputs", "reason": why}],
-                            "source_symbols": cells,
-                        },
-                        inputs,
-                    )
-                    typer.echo(f"Blocked: {why} See {out / 'plan.json'}", err=True)
-                    raise typer.Exit(3)
-                raise AnalysisBudgetError(why)
-        original = tuple(
-            read_msa(paths[name], name, molecule)
-            for name, molecule in zip(("A", "B", "C"), (a_type, b_type, c_type))
-        )
         table = read_triplet_table(paths["matches"])
+        coordinate_rows = (a_ref_row, b_ref_row, c_ref_row)
+        try:
+            source = matched_sources(
+                paths,
+                table.matches,
+                dict(zip("ABC", (a_type, b_type, c_type), strict=True)),
+                dict(zip("ABC", (a_ref, b_ref, c_ref), strict=True)),
+                row_references=dict(zip("ABC", coordinate_rows, strict=True)),
+                starts=dict(zip("ABC", (a_start, b_start, c_start), strict=True)),
+                strands=dict(zip("ABC", (a_strand, b_strand, c_strand), strict=True)),
+                formats=dict(zip("ABC", (a_format, b_format, c_format), strict=True)),
+                byte_limit=budget,
+            )
+        except InputBudgetError as exc:
+            if not dry_run:
+                raise AnalysisBudgetError(str(exc)) from exc
+            publish_plan(
+                out,
+                {
+                    "schema_version": 1,
+                    "status": "blocked",
+                    "blockers": [{"method": "inputs", "reason": str(exc)}],
+                    "source_selection": exc.details,
+                },
+                inputs,
+            )
+            typer.echo(f"Blocked: {exc}. See {out / 'plan.json'}", err=True)
+            raise typer.Exit(3) from exc
+        original, maps, source_selection = source.components, source.maps, source.statistics
         for key, path in paths.items():
             if _file_stamp(path) != stamps[key]:
                 raise ValueError(
                     f"input changed while reading: {path}. Retry with stable input files."
                 )
-
-        coordinate_rows = (a_ref_row, b_ref_row, c_ref_row)
-        maps = tuple(
-            build_reference_map(component, ref_id, start, row_id=row_id, strand=strand)
-            for component, ref_id, start, row_id, strand in zip(
-                original, (a_ref, b_ref, c_ref), (a_start, b_start, c_start), coordinate_rows,
-                (a_strand, b_strand, c_strand),
-            )
-        )
         original_maps = maps
         matched = synchronize(*original, table)
         widths = [c.n_sites for c in matched.components]
@@ -699,6 +709,7 @@ def analyze(
                         "input_rows": matched.n_observations,
                         "input_widths": widths,
                         "qc_workspace_bytes": qc_bytes,
+                        "source_selection": source_selection,
                     },
                     inputs,
                 )
@@ -814,6 +825,7 @@ def analyze(
                     }
                 )
             plan["calibration"]["tree_scenarios"] = plans
+        plan["source_selection"] = source_selection
         if nested:
             group_design, settings_grid, _ = nested
             memberships, _, test_groups = group_design.partition(table, inputs["matches"]["sha256"])
@@ -834,7 +846,12 @@ def analyze(
                 test_groups=test_groups,
                 source=src,
             )
-            plan["stability"]={"source_observations":len(table.matches),"groups":len(set(group_ids.values())),"folds":len(splits.folds),"bootstrap_draws":clade_policy.options.get("bootstrap_draws",0)}
+            plan["stability"] = {
+                "source_observations": len(table.matches),
+                "groups": len(set(group_ids.values())),
+                "folds": len(splits.folds),
+                "bootstrap_draws": clade_policy.options.get("bootstrap_draws", 0),
+            }
         plan["inputs"] = {k: {"sha256": v["sha256"]} for k, v in inputs.items()}
         plan["input_alignments"] = {
             m.name: {
@@ -1034,7 +1051,7 @@ def analyze(
                         **({"reference_row_id": row_id} if row_id is not None else {}),
                         "reference_start": mapping.start,
                         **({"reference_strand": "-"} if mapping.strand == "-" else {}),
-                        "input_sequences": component.n_sequences,
+                        "input_sequences": source_selection[component.name]["source_rows"],
                         "original_sites": component.n_sites,
                         "retained_sites": mapping.n_sites,
                         "retained_columns": mapping.original_positions,
@@ -1057,6 +1074,7 @@ def analyze(
                     "weight_per_retained_site": weights.n_eff / sum(m.n_sites for m in maps),
                 },
                 "qc_diagnostics": audit.summary,
+                "source_selection": source_selection,
                 "analysis_plan": "plan.json",
                 "effective_depth": weights.n_eff,
                 "advanced": advanced,
@@ -1195,7 +1213,7 @@ def analyze(
                 )
                 summary["clade_stability"] = plan["stability"]
                 summary["outputs"]["stability"] = "stability/stability_summary.json"
-                summary["outputs"]["stability_report"]="stability/report.html"
+                summary["outputs"]["stability_report"] = "stability/report.html"
             ranked = ranked_tables(summary)
             if plots and threebody:
                 from triplet_coevolution.reporting.plots import save_triple_plot

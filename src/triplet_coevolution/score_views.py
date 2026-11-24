@@ -73,6 +73,7 @@ def save_analysis_store(
         **software,
         "inputs": {name: {"sha256": data["sha256"]} for name, data in inputs.items()},
         "components": summary["components"],
+        "source_selection": summary.get("source_selection", {}),
         "settings": summary["settings"],
         "apc_universe": selection["apc_universe"],
         "mi_kernel": mi.kernel,

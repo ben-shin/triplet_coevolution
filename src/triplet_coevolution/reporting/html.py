@@ -230,13 +230,31 @@ def _workflow_section(workflow: dict, matching_qc: dict) -> str:
         paths.append(("../" + workflow["analyze_args"], "Replay analysis arguments"))
     paths.extend(("../" + data["table"], f"{key} search hits")
                  for key, data in workflow["search"].items())
+    for role,data in workflow["search"].items():
+        if data.get("manifest"):
+            paths.extend([(f"../search/{role}_discovery/hit_audit.tsv",f"{role} domain alternatives"),
+                          ("../"+data["manifest"],f"{role} search provenance")])
+    legacy=[role for role,data in workflow["search"].items() if data.get("discovery_version")==1]
+    compatibility=(f'<p>Raw schema 1 selected one best eligible domain per source ID in {_text(", ".join(legacy))}. '
+                   'The domain audits retain alternative intervals.</p>') if legacy else ""
     links = "".join(_link(path, label) for path, label in paths)
-    return (f'<section id="workflow"><h2>Search and matching</h2>{searches}'
+    return (f'<section id="workflow"><h2>Search and matching</h2>{searches}{compatibility}'
             f'<p>{workflow["matched_groups"]:,} groups supplied complete matches. '
             f'{workflow["excluded_groups"]:,} groups were excluded under the '
             f'<strong>{_text(workflow["paralogs"])}</strong> policy.</p>{skipped}'
             f'<p class="audit-links">{links}</p></section>')
 
+
+def write_unmatched_report(directory, workflow):
+    """Publish links to completed local discovery evidence when no group is eligible."""
+    links=[_link(workflow["matching_qc"],"Group decisions"),_link("workflow_summary.json","Workflow manifest")]
+    for role,result in workflow["search"].items():
+        links.append(_link(result["table"],f"{role} accepted hits"))
+        links.append(_link(f"search/{role}_discovery/hit_audit.tsv",f"{role} full domain audit"))
+    (directory/"report.html").write_text('<!doctype html><meta charset="utf-8"><title>Search and matching</title>'
+        f'<main><h1>Search and matching</h1><p>{_text(workflow["reason"])}</p>'
+        f'<p>{workflow["excluded_groups"]:,} excluded groups.</p><ul>'+
+        "".join(f"<li>{link}</li>" for link in links)+"</ul></main>",encoding="utf-8")
 
 def attach_workflow_report(directory: Path, workflow_summary: dict, matching_qc: dict) -> None:
     """Include the search and matching audit in the report published by the full workflow."""

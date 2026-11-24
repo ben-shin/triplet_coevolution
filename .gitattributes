@@ -1,2 +1,9 @@
 *.sh text eol=lf
 src/triplet_coevolution/_revision.py export-subst
+
+# Preserve prospective registrations and hash-verified result payloads on every checkout.
+benchmarks/experimental_protocol.json text eol=lf
+docs/experimental-benchmark-protocol.md text eol=lf
+benchmarks/independent_cohort_protocol.json text eol=lf
+benchmarks/experimental_structure_metrics.tsv text eol=lf
+benchmarks/experimental_tree_metrics.json -text

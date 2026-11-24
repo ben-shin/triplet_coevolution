@@ -12,10 +12,9 @@ import typer
 
 from triplet_coevolution.analysis_plan import match_metadata
 from triplet_coevolution.config import _unique
-from triplet_coevolution.core.coordinates import build_reference_map
-from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.metadata import read_triplet_table
 from triplet_coevolution.io.score_store import file_digest
+from triplet_coevolution.io.selected_sources import matched_sources
 from triplet_coevolution.msa.synchronize import synchronize
 from triplet_coevolution.provenance import file_hashes
 from triplet_coevolution.score_views import write_json
@@ -198,21 +197,18 @@ def _source(source, summary, inputs):
     if any(file_digest(path) != digests[k] for k, path in paths.items()):
         raise ValueError("native source input checksum mismatch")
     table = read_triplet_table(paths["matches"])
-    components = []
-    maps = []
-    for c in "ABC":
-        v = prov["components"][c]
-        comp = read_msa(paths[c], c, v["molecule_type"])
-        components.append(comp)
-        maps.append(
-            build_reference_map(
-                comp,
-                v["reference_id"],
-                v["reference_start"],
-                row_id=v.get("reference_row_id"),
-                strand=v.get("reference_strand", "+"),
-            )
-        )
+    comp = prov["components"]
+    source = matched_sources(
+        paths,
+        table.matches,
+        {c: v["molecule_type"] for c, v in comp.items()},
+        {c: v["reference_id"] for c, v in comp.items()},
+        row_references={c: v.get("reference_row_id") for c, v in comp.items()},
+        starts={c: v["reference_start"] for c, v in comp.items()},
+        strands={c: v.get("reference_strand", "+") for c, v in comp.items()},
+        formats={c: v["format"] for c, v in prov.get("source_selection", {}).items()},
+    )
+    components, maps = source.components, source.maps
     if any(file_digest(path) != digests[k] for k, path in paths.items()):
         raise ValueError("source inputs changed while reading")
     return synchronize(*components, table), tuple(maps), table, digests

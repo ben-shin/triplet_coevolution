@@ -53,6 +53,8 @@ Only `group_id`, `component` and `sequence_id` are required. Surrounding whitesp
 
 Read `matching_qc.json` to inspect each group's candidate list, priorities, availability, selected IDs and exclusion reasons. It also reports sequences outside the evidence table, aligned lengths and coverage, gap and missing fractions across matched rows. Standalone prepare writes QC even when no group qualifies. The `ready_for_analysis` field indicates whether there are matched rows.
 
+Raw discovery uses schema 2 in the packaged example. Aligned `prepare` and native `analyze` accept FASTA, Stockholm and A3M with optional gzip. Specify component `format` or native `--a-format`, `--b-format`, `--c-format` for an unusual suffix. Selected derivatives retain the input format. For A3M, reference positions advance across lowercase residues while original alignment columns refer to match positions. Above 1,000 unassigned source rows per component, QC contains a preview and a link to the complete ordered TSV. [Reader and resource measurements](native-ingestion.md)
+
 ## Search and reference coordinates
 
 Set a component's `backend` to select one of the following searches. The default `reference` backend requires only the base Python installation. External searches require the listed executable(s) on the same environment's PATH.
@@ -62,19 +64,23 @@ Set a component's `backend` to select one of the following searches. The default
 | `reference` | Single reference FASTA and database FASTA, any supported molecule | Local affine-gap alignment. Defaults to `min_identity` 0.5 and `min_coverage` 0.7. |
 | `hmmer` | One text HMMER3 `profile` of the declared molecular alphabet. Protein uses `hmmsearch`, nucleotides use `nhmmer`. | Protein uses the reported aligned domain and independent domain E-value. Nucleotide hits include the reported strand. |
 | `infernal` | One calibrated text Infernal RNA covariance model in `profile`, searched with `cmsearch`. | Accepted model hits include the reported interval and strand. |
+| `jackhmmer` | Single typed protein seed and a local protein FASTA. Requires JACKHMMER. | Iterative inclusion and reporting thresholds, seed, per-round evidence and final Stockholm alignment. |
+| `import` | Source database, reference and local `hit_table`. | Interprets the declared HMMER, Infernal or BLAST format, preserving query, target and strand coordinates. |
 | `psiblast` | Protein. Requires `makeblastdb` and `psiblast`. Provide a reference query or supply a PSI-BLAST checkpoint in `profile` to restart a PSSM. The reference FASTA is required for coordinates in both cases. | Final iteration HSPs. `iterations` defaults to 3. |
 
 External backends use the positive `evalue` threshold, default 0.01. Provide a profile covering the same homologous region as the reference FASTA. Profile calibration and training take place before this workflow. Programs run locally against a supplied FASTA. PSI-BLAST builds a temporary local database and disables usage reporting. The optional adapters were exercised with HMMER 3.4, Infernal 1.1.5 and BLAST+ 2.16.0. [HMMER guide](https://eddylab.org/software/hmmer/CURRENT/Userguide.pdf) · [Infernal guide](https://eddylab.org/infernal/Userguide.pdf) · [BLAST+ manual](https://www.ncbi.nlm.nih.gov/books/NBK279690/)
 
 Reference search tests both strands for DNA and RNA. Local alignment scores a canonical match as +2, mismatch as −1, gap opening as −4 and gap extension as −1. Ambiguous symbols use a neutral substitution score. Identity is the fraction of equal symbols among aligned canonical pairs. Coverage is the number of those pairs divided by the number of canonical sites in the reference. This backend compares every record and is intended for modest domain-sized inputs. Each pairwise alignment is limited to ten million reference-by-target cells.
 
-For multiple qualifying hits on one database record, the workflow selects the highest score, then lowest E-value, forward search strand, earliest source start and earliest source end. The portable backend uses the first optimal local traceback on each strand to select the source interval. Hit tables retain its inclusive 1-based database coordinates in `first` and `last`. For external searches, `model_first`, `model_last` and `model_strand` record the search program's model coordinates and strand. The effective retrieval strand relative to the forward coordinate reference is `strand`.
+**Schema 2.** Multiple qualifying domains of one source keep distinct range IDs. A bare ambiguous source ID cannot select one copy. Declare the exact oriented range in the evidence file or retain the group as unresolved. The aligner receives the evidence-listed rows and the coordinate seed. Every parsed hit and rejection remains in the per-component audit. With no resolved groups, the command publishes all audits, writes a local report and returns exit 3. Other invalid inputs or failed executions return exit 1.
+
+**Schema 1 compatibility.** An unchanged v1 component with its original reference/HMMER/Infernal/PSI-BLAST options retains the historical highest-score source interval, then lowest E-value, strand and coordinate tie breaks. Its source-level hit alignment includes eligible rows outside the supplied evidence. Its audit identifies the best interval and parsed alternatives. Ambiguous projection remains an error on that route. To migrate, set `schema_version` to 2, preserve the v1 report, and use the v2 domain audit to review any altered cohort. A new search or alignment setting in a schema-1 component selects the v2 semantics for that component.
 
 Each accepted hit records how its residues were placed on the reference in `projection_method`. If the full database sequence equals the reference or its reverse complement, the selected source interval determines the reference columns exactly, even when the sequence contains repeated copies. For other homologs, portable search uses the query traceback and sequence-initiated PSI-BLAST uses the reported query interval. With a supplied profile the workflow also searches the reference, independently of the database search. It fits the target domain within qualifying reference hits sharing the greatest number of model positions. The target and reference model strands determine the orientation.
 
 If multiple reference spans have the same best domain alignment score, the sequence immediately to either side of the selected target interval is aligned outwards against each reference location. A unique highest combined flanking score resolves the tie. If distinct endpoints or orientations remain tied, including overlapping repeat copies, the run reports the ambiguity and asks for a domain-specific reference or a curated alignment. Gap placements with the same reference endpoints use Biopython's deterministic traceback.
 
-The hit table records the resulting 1-based reference columns in `reference_first` and `reference_last`, and their coordinates after applying `reference_start` in `reference_pos_first` and `reference_pos_last`. Every reference position contributes one MSA column. A deletion appears as a gap. Target residues inserted between reference positions have no anchored column and are omitted from scoring. To study insertion columns, supply a precomputed alignment to `prepare` or `analyze`.
+For reference projection, the hit table records the resulting 1-based reference columns in `reference_first` and `reference_last`, and their coordinates after applying `reference_start` in `reference_pos_first` and `reference_pos_last`. Every reference position contributes one MSA column. A deletion appears as a gap. Target residues inserted between reference positions have no anchored column and are omitted from scoring. To study insertion columns, supply a precomputed alignment to `prepare` or `analyze`.
 
 If a selected interval shares the reference ID but covers only part of its sequence, that observation keeps its biological ID and contributes the selected interval. The full coordinate seed receives a separate, unique FASTA row ID. Tables and contacts continue to use the original biological reference ID. The matching QC records both identifiers. Standalone prepare accepts a component-level `reference_row_id` when an input alignment uses distinct coordinate and observation rows.
 
@@ -83,12 +89,15 @@ If a selected interval shares the reference ID but covers only part of its seque
 | Path in a full run | Contents |
 | --- | --- |
 | `search/{A,B,C}_hits.tsv` | Selected intervals, strands, scores and backend-specific evidence. |
-| `search/{A,B,C}.fasta` | All retrieved hits projected onto their component reference. |
+| `search/{A,B,C}.fasta` | Aligned evidence-requested domain rows and coordinate seed in schema 2. |
+| `search/{A,B,C}_discovery/` | Source-specific hit audit, accepted/rejected alternatives and discovery manifest. External schema-2 backends also retain raw command evidence and profile alignment artifacts where available. |
 | `prepared/{A,B,C}.fasta`, `prepared/matches.tsv` | Inputs to `triplet analyze`, reusable with other scoring settings. |
 | `prepared/analyze_args.json` | CLI arguments for replay from the prepared directory, including coordinate row overrides and the selected analysis settings. |
 | `prepared/matching_qc.json` | Candidate-level audit and matched-row QC. |
 | `analysis/` | Ranked tables, optional validation and plots, network, HTML report and analysis manifest. |
 | `workflow_summary.json` | Package and Biopython versions, hashes of original input files, external search executable names, paths and versions, effective search settings, group totals and result paths. |
+
+See the [executable search examples and verification](../benchmarks/search-discovery.md) for `hmmalign`, `cmalign`, target/domain inclusion thresholds, resource bounds and cache keys. For genome-based matching, see [GFF3 and privacy settings](genomic-evidence.md).
 
 Standalone prepare writes the prepared alignments, match table, QC and workflow summary directly in `--out`. Inspect the QC before using incomplete or ambiguous datasets for analysis.
 

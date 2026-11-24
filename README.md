@@ -81,6 +81,8 @@ Use `triplet calibrate` to test individual scores from a saved analysis, or pass
 
 Test independent-site evolution on a supplied Newick tree with `triplet calibrate`. Use `triplet split` to reserve complete clades before reading outcomes, and `triplet stability` to compare training ranks with scores re-estimated on the held-out clades. [Evolutionary model, tree sensitivity and split examples](docs/evolutionary-controls.md)
 
+Native inputs can be aligned FASTA, A3M or Stockholm, optionally gzip-compressed. The scorer materializes only matched rows and coordinate references after validating the full inventory. [Formats, biological coordinates and memory](docs/native-ingestion.md)
+
 ## Prepare your inputs
 
 Supply one aligned FASTA or one Stockholm alignment per component. Sequences within a component must have equal aligned lengths and unique, case-sensitive IDs. For FASTA, the ID is the first whitespace-delimited token after `>`. Each component defaults to `protein`. Set `--a-type`, `--b-type` or `--c-type` to `protein`, `dna` or `rna` as needed.
@@ -95,6 +97,8 @@ The match table is a UTF-8 TSV or CSV file with the following four required colu
 Each observation and each component ID must occur once in its respective column. Sequence IDs must occur in the corresponding alignment. Supply curated matches for homologs you intend to compare. Unlisted sequences are excluded from scoring. Each `--*-ref` identifies the biological reference used in reported coordinates and contact labels. By default the alignment contains a row with that ID. If a full coordinate row has a different ID, supply `--a-ref-row`, `--b-ref-row` or `--c-ref-row`. A matched, trimmed hit can then retain its original identifier while the full reference defines the coordinates.
 
 Use `--dca --dca-backend plm` for mixed-alphabet pseudolikelihood couplings. Compare joint and separate interface fits with `triplet dca-compare`, and evaluate predictive gain from three-site terms on prespecified held-out clades with `triplet conditional`. [Model choices and runnable examples](docs/conditional-models.md)
+
+Raw schema 2 supports iterative JACKHMMER, profile-aware protein/nucleic-acid alignment and local hit table imports with distinct domain ranges. The three-folder workflow also accepts local GFF3 features and named systems per assembly. [Raw search and migration](docs/workflows.md) · [Genomic evidence and lookup controls](docs/genomic-evidence.md)
 
 ## Read the results
 
