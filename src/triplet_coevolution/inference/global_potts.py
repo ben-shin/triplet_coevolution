@@ -13,7 +13,16 @@ from triplet_coevolution.inference.mi import (
     canonical_support_at_cutoff,
     check_min_valid_weight,
 )
+from triplet_coevolution.inference.nested import (
+    NestedOptions,
+    compare_nested,
+    evaluate_model,
+    fit_nested,
+    load_model,
+)
 from triplet_coevolution.inference.threebody import TripleScore, fit_triples
+
+__all__ = ["NestedOptions", "compare_nested", "evaluate_model", "fit_nested", "global_triples", "load_model"]
 
 
 def _zero_sum(array):
