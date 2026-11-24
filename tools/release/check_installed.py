@@ -60,6 +60,15 @@ def main():
         "benchmarks/verify_independent_contacts.py",
         "benchmarks/verify_independent_nested.py",
         "docs/implementation-report.md",
+        "docs/gibbs-bootstrap.md",
+        "docs/plm-geometry-followup.md",
+        "docs/recovery-matrix.md",
+        "examples/mixed/conditional-gibbs.json",
+        "benchmarks/gibbs_bootstrap.py",
+        "benchmarks/recovery_matrix_protocol.json",
+        "benchmarks/recovery_matrix_results.json",
+        "benchmarks/plm_geometry_followup_policy.json",
+        "benchmarks/plm_geometry_followup_results.json.gz",
     ):
         assert (data / name).is_file(), name
     exe = Path(sysconfig.get_path("scripts")) / (

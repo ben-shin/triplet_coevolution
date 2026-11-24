@@ -48,7 +48,8 @@ include = ["triplet_coevolution*"]
   "benchmarks/experimental_structure_metrics.tsv", "benchmarks/independent_cohort_*.json",
   "benchmarks/independent_cohort_*.gz", "benchmarks/independent_evaluation_policy.json",
   "benchmarks/independent_*_metrics.json", "benchmarks/independent_*_metrics.tsv", "benchmarks/independent_*_metrics.json.gz",
-  "benchmarks/*.md",
+  "benchmarks/recovery_matrix_*.json", "benchmarks/plm_geometry_followup_policy.json",
+  "benchmarks/plm_geometry_followup_results.json.gz", "benchmarks/*.md",
 ]
 "share/triplet-coevolution/examples/structure" = [
   "examples/structure/config.json", "examples/structure/references.fasta",
@@ -58,6 +59,7 @@ include = ["triplet_coevolution*"]
 "share/triplet-coevolution/examples/mixed" = [
   "examples/mixed/protein.fasta", "examples/mixed/dna.fasta", "examples/mixed/rna.fasta",
   "examples/mixed/matches.tsv", "examples/mixed/clade-study.json", "examples/mixed/conditional.json",
+  "examples/mixed/conditional-gibbs.json",
   "examples/mixed/dca-grid.json", "examples/mixed/local-model.json", "examples/mixed/null-policy.json",
   "examples/mixed/observations.nwk", "examples/mixed/tree-null.json",
 ]

@@ -13,3 +13,6 @@ benchmarks/independent_*_metrics.json text eol=lf
 benchmarks/independent_*_metrics.tsv text eol=lf
 benchmarks/independent_contact_metrics.json.gz binary
 benchmarks/experimental_fluorescence_results.json text eol=lf
+benchmarks/recovery_matrix_*.json text eol=lf
+benchmarks/plm_geometry_followup_policy.json text eol=lf
+benchmarks/plm_geometry_followup_results.json.gz binary

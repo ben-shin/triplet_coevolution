@@ -16,6 +16,9 @@ include benchmarks/independent_evaluation_policy.json
 include benchmarks/independent_*_metrics.json
 include benchmarks/independent_*_metrics.tsv
 include benchmarks/independent_*_metrics.json.gz
+include benchmarks/recovery_matrix_*.json
+include benchmarks/plm_geometry_followup_policy.json
+include benchmarks/plm_geometry_followup_results.json.gz
 prune results
 prune input
 include input/README.md
