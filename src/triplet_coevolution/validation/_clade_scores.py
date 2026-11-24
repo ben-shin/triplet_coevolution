@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from triplet_coevolution.inference.candidates import candidate_id, select_candidates
+from triplet_coevolution.inference.dca_models import DCADesign
 from triplet_coevolution.inference.maxent import fit_maxent_triples
 from triplet_coevolution.inference.maxent_support import freeze_support
 from triplet_coevolution.inference.mi import triplet_mi
@@ -50,6 +51,7 @@ class FoldScores:
     triples: object
     support: object
     maxent: object
+    dca_design: dict | None = None
 
     def coordinates(self, interface, index):
         if interface == "ABC":
@@ -97,7 +99,10 @@ class FoldScores:
             )
             block["mi"] = {p: getattr(mi, p.lower()) for p in PAIRS}
         if weights is not None and "dca" in methods:
-            dca = direct_couplings(msa, weights, ridge=self.ridge, **cut)
+            design = DCADesign.parse(
+                self.dca_design, ridge=self.ridge if self.dca_design is None else None
+            )
+            dca = design.fit(msa, weights, mf=direct_couplings, **cut)
             block["dca"] = dca_with_apc_policy(dca, self.maps, self.apc_universe)
         triples = None
         if weights is not None and "threebody" in methods:
@@ -158,6 +163,7 @@ def fold_scorer(train, maps, weights, settings, candidate_options, maxent):
         candidates,
         support,
         maxent,
+        settings.get("dca_design"),
     )
 
 

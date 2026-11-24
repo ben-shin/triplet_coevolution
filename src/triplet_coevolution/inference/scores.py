@@ -33,7 +33,11 @@ class ScoreSpec:
     interpretation: str
 
     def metadata(
-        self, *, apc_universe: APCUniverse = "retained", threebody_model: str | None = None
+        self,
+        *,
+        apc_universe: APCUniverse = "retained",
+        threebody_model: str | None = None,
+        dca_design: dict | None = None,
     ) -> dict[str, str]:
         """Resolve method and support descriptions for a particular run."""
         check_apc_universe(apc_universe)
@@ -48,6 +52,32 @@ class ScoreSpec:
         data = asdict(self)
         if self.correction == "APC":
             data["universe"] = f"{apc_universe} axes per component pair"
+        if self.method == "dca" and dca_design:
+            joint = dca_design["conditioning"] == "joint"
+            plm = dca_design["backend"] == "plm"
+            data["backend"] = (
+                "asymmetric sitewise regularized pseudolikelihood DCA"
+                if plm
+                else "ridge mean-field DCA"
+            )
+            data["conditioning"] = (
+                "all retained sites of A, B and C"
+                if joint
+                else "all retained sites of each interface fitted separately"
+            )
+            data["missing_policy"] = (
+                dca_design["plm"]["missing_policy"] if plm else "centered mean imputation"
+            )
+            data["gap_policy"] = (
+                "explicit fitting state; exclude gap from norm"
+                if dca_design["include_gaps"]
+                else "missing"
+            )
+            data["norm_support"] = (
+                dca_design["alphabet_support"] + " canonical states, zero-sum gauge"
+            )
+            if plm:
+                data["units"] = "conditional logit coupling norm (natural logs)"
         if self.method == "threebody" and threebody_model == "global":
             data["missing_policy"] = "positive-weight complete rows across the entire fitted panel"
             if self.name == "threebody_rms":

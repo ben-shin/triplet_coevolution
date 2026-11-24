@@ -36,19 +36,73 @@ def direct_couplings(
     ridge: float = 0.1,
     min_valid: int = 2,
     min_valid_weight: float = 0.0,
+    conditioning: str = "joint",
+    include_gaps: bool = False,
+    alphabet_support: str = "observed",
+    shrinkage: float = 0.0,
+    diagnostics: dict | None = None,
 ) -> dict[str, DCABlock]:
-    """Fit one inverse covariance model across all retained sites of A, B and C."""
+    """Fit ridge inverse covariance jointly or on each two-component conditioning panel."""
     if not np.isfinite(ridge) or ridge <= 0:
         raise ValueError("DCA ridge must be finite and positive")
     min_valid = _check_min_valid(min_valid)
     min_valid_weight = check_min_valid_weight(min_valid_weight)
-    w = _get_weights(weights, msa.n_observations,msa)
+    w = _get_weights(weights, msa.n_observations, msa)
+    if conditioning not in {"joint", "pairwise"} or alphabet_support not in {"observed", "fixed"}:
+        raise ValueError(
+            "DCA conditioning must be joint or pairwise, and alphabet_support observed or fixed"
+        )
+    if (
+        type(include_gaps) is not bool
+        or type(shrinkage) not in (float, int)
+        or not np.isfinite(shrinkage)
+        or not 0 <= shrinkage <= 1
+    ):
+        raise ValueError("include_gaps must be Boolean and shrinkage a fraction in [0,1]")
+    sets = [(0, 1, 2)] if conditioning == "joint" else PAIRS
+    results = {}
+    for indices in sets:
+        subset = [msa.components[i] for i in indices]
+        info = {} if diagnostics is not None else None
+        results.update(
+            _ridge_fit(
+                subset,
+                w,
+                ridge,
+                min_valid,
+                min_valid_weight,
+                include_gaps,
+                alphabet_support,
+                shrinkage,
+                info,
+            )
+        )
+        if info is not None:
+            diagnostics["".join(c.name for c in subset)] = info
+    return results
+
+
+def _ridge_fit(
+    components,
+    w,
+    ridge,
+    min_valid,
+    min_valid_weight,
+    include_gaps,
+    alphabet_support,
+    shrinkage,
+    info,
+):
     sites = []
+    contrast_indices = []
+    total_variance = 0.0
     slices = []
     valid = []
     width = 0
-    for comp in msa.components:
-        q = len(CANONICAL[comp.molecule])
+    for comp in components:
+        native_q = len(CANONICAL[comp.molecule])
+        q = native_q + include_gaps
+        canonical_contrasts = []
         is_canonical = (comp.matrix >= 0) & (comp.matrix < q)
         valid.append(is_canonical)
         blocks = []
@@ -58,14 +112,28 @@ def direct_couplings(
             counts = np.bincount(x[rows], weights=w[rows], minlength=q)
             states = np.flatnonzero(counts)
             # A constant/empty site has no estimable contrasts.
-            if len(states) < 2:
+            if alphabet_support == "fixed":
+                states = np.arange(q)
+            elif len(states) < 2:
                 states = states[:0]
+            canonical_contrasts.append(np.flatnonzero(states < native_q))
+            if shrinkage and counts.sum():
+                total_variance += (counts.sum() - np.dot(counts, counts) / counts.sum()) / w.sum()
             block = slice(width, width + len(states))
             width = block.stop
             blocks.append(block)
             if len(states):
-                sites.append((x, q, states, counts[states] / counts.sum(), block))
+                sites.append(
+                    (
+                        x,
+                        q,
+                        states,
+                        counts[states] / counts.sum() if counts.sum() else np.zeros(len(states)),
+                        block,
+                    )
+                )
         slices.append(blocks)
+        contrast_indices.append(canonical_contrasts)
     n = len(w)
     dual = n < width and n <= MAX_SOLVE_DIMENSION and n * width <= MAX_DUAL_ELEMENTS
     if not dual and width > MAX_SOLVE_DIMENSION:
@@ -75,7 +143,42 @@ def direct_couplings(
             "Use a smaller panel or stricter column masks."
         )
 
+    # Spherical shrinkage toward trace(C)/D * I, followed by an additive covariance ridge.
+    penalty = ridge + (shrinkage * total_variance / width if shrinkage and width else 0.0)
     scaled_weights = np.sqrt(w / w.sum())
+    if shrinkage:
+        scaled_weights = scaled_weights * np.sqrt(1.0 - shrinkage)
+
+    def spectrum(matrix):
+        if info is None:
+            return
+        info.update(
+            solver="dual" if dual else "primal",
+            feature_dimension=width,
+            observations=len(w),
+            positive_weight_observations=int(np.count_nonzero(w)),
+            centered_covariance_rank_upper_bound=min(width, int(np.count_nonzero(w))),
+            ridge=ridge,
+            shrinkage=shrinkage,
+            effective_diagonal_penalty=penalty,
+            rank_scope="spectrum of scaled covariance before diagonal penalty",
+        )
+        if matrix.shape[0] > 512:
+            info["spectrum_status"] = "not_computed_over_512_dimensions"
+            return
+        eigen = np.linalg.eigvalsh(matrix)
+        top = float(eigen[-1]) if len(eigen) else 0.0
+        smallest = (
+            0.0 if dual and width > len(w) else max(float(eigen[0]), 0.0) if len(eigen) else 0.0
+        )
+        tol = max(width, len(w)) * np.finfo(float).eps * top
+        info.update(
+            spectrum_status="computed",
+            rank=int(np.count_nonzero(eigen > tol)),
+            max_scaled_eigenvalue=top,
+            min_scaled_eigenvalue=smallest,
+            regularized_condition_number=(top + penalty) / (smallest + penalty),
+        )
 
     def weighted_design(rows):
         design = np.zeros((len(w[rows]), width))
@@ -91,8 +194,9 @@ def direct_couplings(
         # exactly the same ridge inverse via Woodbury in observation space.
         design = weighted_design(slice(None))
         gram = design @ design.T
-        gram.flat[:: n + 1] += ridge
-        features = np.linalg.solve(np.linalg.cholesky(gram), design) / np.sqrt(ridge)
+        spectrum(gram)
+        gram.flat[:: n + 1] += penalty
+        features = np.linalg.solve(np.linalg.cholesky(gram), design) / np.sqrt(penalty)
         del design, gram
     else:
         covariance = np.zeros((width, width))
@@ -100,22 +204,25 @@ def direct_couplings(
         for start in range(0, n, batch):
             design = weighted_design(slice(start, start + batch))
             covariance += design.T @ design
+        spectrum(covariance)
         if width:
-            covariance.flat[:: width + 1] += ridge
+            covariance.flat[:: width + 1] += penalty
         precision = np.linalg.inv(covariance) if width else covariance
 
     results = {}
-    for a, b in PAIRS:
+    for a, b in combinations(range(len(components)), 2):
         rows_a = valid[a] & (w > 0)[:, None]
         n_valid = rows_a.astype(np.int64).T @ valid[b]
         valid_weight = (w[:, None] * rows_a).T @ valid[b]
-        _pair_support_at_cutoff(valid_weight,rows_a,valid[b],w,min_valid_weight)
+        _pair_support_at_cutoff(valid_weight, rows_a, valid[b], w, min_valid_weight)
         scores = np.full(n_valid.shape, np.nan)
         for i, sx in enumerate(slices[a]):
             for j, sy in enumerate(slices[b]):
-                if n_valid[i,j] < min_valid or valid_weight[i,j] < min_valid_weight:
+                if n_valid[i, j] < min_valid or valid_weight[i, j] < min_valid_weight:
                     continue
                 coupling = features[:, sx].T @ features[:, sy] if dual else -precision[sx, sy]
+                if include_gaps:
+                    coupling = coupling[np.ix_(contrast_indices[a][i], contrast_indices[b][j])]
                 if coupling.size:
                     coupling = (
                         coupling
@@ -124,5 +231,7 @@ def direct_couplings(
                         + coupling.mean()
                     )
                 scores[i, j] = np.linalg.norm(coupling)
-        results["ABC"[a] + "ABC"[b]] = DCABlock(scores, apc(scores), n_valid, valid_weight)
+        results[components[a].name + components[b].name] = DCABlock(
+            scores, apc(scores), n_valid, valid_weight
+        )
     return results

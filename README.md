@@ -94,6 +94,8 @@ The match table is a UTF-8 TSV or CSV file with the following four required colu
 
 Each observation and each component ID must occur once in its respective column. Sequence IDs must occur in the corresponding alignment. Supply curated matches for homologs you intend to compare. Unlisted sequences are excluded from scoring. Each `--*-ref` identifies the biological reference used in reported coordinates and contact labels. By default the alignment contains a row with that ID. If a full coordinate row has a different ID, supply `--a-ref-row`, `--b-ref-row` or `--c-ref-row`. A matched, trimmed hit can then retain its original identifier while the full reference defines the coordinates.
 
+Use `--dca --dca-backend plm` for mixed-alphabet pseudolikelihood couplings. Compare joint and separate interface fits with `triplet dca-compare`, and evaluate predictive gain from three-site terms on prespecified held-out clades with `triplet conditional`. [Model choices and runnable examples](docs/conditional-models.md)
+
 ## Read the results
 
 | File | Contents |

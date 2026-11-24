@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+optimize = ["scipy>=1.11,<2"]
 dev = ["pytest>=8", "ruff>=0.8"]
 plots = ["matplotlib>=3.8,<4"]
 

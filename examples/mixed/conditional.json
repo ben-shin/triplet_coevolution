@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "clades": {
+    "source": "Synthetic clades defined before fitting by the second edge from the tree root.",
+    "clade_tree": {"newick": "observations.nwk"},
+    "tree_depth": 2,
+    "weight_policy": "uniform"
+  },
+  "panel": {"A": [2], "B": [2], "C": [1]},
+  "triples": [[2, 2, 1]],
+  "options": {"min_state_count": 1},
+  "l2_grid": [0.03, 0.1],
+  "bootstrap_draws": 100,
+  "seed": 41
+}

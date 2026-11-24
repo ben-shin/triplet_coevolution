@@ -70,6 +70,8 @@ class RefitData:
             paths = {}
             for k in ("A", "B", "C", "matches"):
                 paths[k] = Path(overrides.get(k, summary["inputs"][k]["path"]))
+                if k not in overrides and not paths[k].is_absolute():
+                    paths[k] = root / paths[k]
                 if not paths[k].is_file() or file_digest(paths[k]) != prov["inputs"][k]["sha256"]:
                     raise ValueError(
                         f"source {k} unavailable or checksum mismatch; use --inputs for relocation"

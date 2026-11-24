@@ -69,7 +69,7 @@ def _site(row, prefix):
 
 METHODS = {
     "MI": "Mutual information captures statistical dependence. APC adjusts each component pair for background signal.",
-    "DCA": "Ridge mean-field DCA estimates couplings in a model of all retained alignment columns.",
+    "DCA": "DCA ranks fitted couplings on the declared conditioning panel. The score definition records the estimator and regularization.",
     "Local maximum entropy": "Connected information measures departure from the fitted pairwise marginal model in bits. Signed co-information and the projected log-linear RMS measure different properties of the same three sites.",
     "Three-body Potts": "Each tested candidate joins one site from each component. Local and conditional models have different interpretations.",
 }
@@ -336,7 +336,21 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
     files = [t.path for t in tables]
     files.extend(info["path"] for info in advanced.get("outputs", {}).values())
     files.extend([outputs["network"]["path"], "run_summary.json", *outputs["figures"].values()])
-    files.extend(outputs[key] for key in ("score_manifest", "score_payload", "benchmark", "calibration", "calibration_report", "stability", "stability_report") if key in outputs)
+    files.extend(
+        outputs[key]
+        for key in (
+            "score_manifest",
+            "score_payload",
+            "benchmark",
+            "calibration",
+            "calibration_report",
+            "stability",
+            "stability_report",
+            "conditional",
+            "conditional_report",
+        )
+        if key in outputs
+    )
     files.extend(outputs[k] for k in ("weights", "plan", "replay") if k in outputs)
     files.extend(outputs.get("diagnostics", {}).values())
     links = "".join(f"<li>{_link(p, p)}</li>" for p in dict.fromkeys(files))
@@ -402,6 +416,36 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
                 fit["diagnostic_table"], "Every candidate, prior setting and convergence residual"
             )
             + "</p>"
+        )
+    if dca_fit := advanced.get("dca_diagnostics"):
+        design = advanced.get("settings", {}).get("dca_design", {})
+        coverage += "<h3>Direct coupling fit</h3>" + _table(
+            ["Setting", "Value"],
+            [
+                ("Backend", design.get("backend", "mf")),
+                ("Conditioning", design.get("conditioning", "joint")),
+                ("Status", dca_fit.get("status", "fitted")),
+            ],
+        )
+        coverage += (
+            "<p>Per-target or covariance diagnostics and the fitting policy appear in the "
+            + _link("run_summary.json", "analysis manifest")
+            + ".</p>"
+        )
+    if heldout := summary.get("conditional"):
+        coverage += (
+            "<h3>Held-out conditional prediction</h3>"
+            + _table(
+                ["Prespecified L2", "Evaluated folds", "Mean loss gain (nats/site)"],
+                [
+                    (row["l2"], row["evaluated_folds"], row["clade_macro_gain_nats_per_site"])
+                    for row in heldout["grid"]
+                ],
+            )
+            + _link(
+                outputs["conditional_report"],
+                "Paired test losses, uncertainty and fitted conditionals",
+            )
         )
     if stable := summary.get("clade_stability"):
         coverage += "<h3>Held-out clade stability</h3><p>" + _text(stable["groups"]) + " groups in " + _text(stable["folds"]) + " training/held-out splits. " + _link(outputs["stability_report"],"Fold ranks, coordinate support and resampling intervals") + "</p>"

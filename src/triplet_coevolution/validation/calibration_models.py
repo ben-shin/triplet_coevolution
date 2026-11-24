@@ -6,6 +6,7 @@ from math import prod
 import numpy as np
 
 from triplet_coevolution.inference.candidates import candidate_id
+from triplet_coevolution.inference.dca_models import DCADesign
 from triplet_coevolution.inference.global_potts import global_triples
 from triplet_coevolution.inference.maxent import fit_maxent_triples
 from triplet_coevolution.inference.mi import triplet_mi
@@ -154,7 +155,13 @@ class CalibrationModel:
         if any(s.method == "mi" for s in self.specs):
             peak += max(cart * 96, resources.get("mi_workspace_bytes", 0))
         if any(s.method == "dca" for s in self.specs):
-            peak += max(cart * 128, resources.get("dca_workspace_bytes", 0))
+            planned = resources.get("dca_workspace_bytes", 0)
+            if design := self.settings.get("dca_design"):
+                planned = max(
+                    planned,
+                    DCADesign.parse(design).preflight(self.data.msa)["estimated_numeric_bytes"],
+                )
+            peak += max(cart * 128, planned)
         if self.support:
             cell_counts = [prod(self.support.shape_for(t)) for t in self.triples]
             peak += max(cell_counts, default=0) * 128
@@ -227,9 +234,9 @@ class CalibrationModel:
                 pair["mi"] = {s: getattr(mi, s.lower()) for s in ("AB", "AC", "BC")}
             if "dca" in requested:
                 pair["dca"] = dca_with_apc_policy(
-                    direct_couplings(
-                        msa, weights, ridge=self.settings["ridge"], **self.support_kwargs
-                    ),
+                    DCADesign.parse(
+                        self.settings.get("dca_design"), ridge=self.settings.get("ridge")
+                    ).fit(msa, weights, mf=direct_couplings, **self.support_kwargs),
                     self.data.store.maps,
                     self.apc,
                 )

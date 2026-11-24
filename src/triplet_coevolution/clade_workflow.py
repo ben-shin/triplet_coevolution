@@ -191,6 +191,9 @@ def _source(source, summary, inputs):
     paths = {
         k: Path(inputs.get(k, summary["inputs"][k]["path"])) for k in ("A", "B", "C", "matches")
     }
+    paths = {
+        k: source / v if k not in inputs and not v.is_absolute() else v for k, v in paths.items()
+    }
     digests = {k: prov["inputs"][k]["sha256"] for k in paths}
     if any(file_digest(path) != digests[k] for k, path in paths.items()):
         raise ValueError("native source input checksum mismatch")
@@ -244,8 +247,18 @@ def _write_stability(dest, source, policy, *, summary=None, inputs=None, live=No
         weights["supplied_weights"] = match_metadata(
             table, range(len(table.matches)), policy.weight_column, numeric=True
         )
+    design = summary.get("settings", {}).get("dca_design")
+    if design and "ridge" in policy.options and policy.options["ridge"] != design.get("ridge"):
+        raise ValueError("stability ridge disagrees with archived DCA estimator")
     result = evaluate_stability(
-        msa, maps, groups, source=meta, test_groups=test, weight_options=weights, **policy.options
+        msa,
+        maps,
+        groups,
+        source=meta,
+        test_groups=test,
+        weight_options=weights,
+        dca_design=design,
+        **policy.options,
     )
     dest.mkdir(parents=True, exist_ok=True)
     write_stability(dest, result)

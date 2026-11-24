@@ -329,6 +329,7 @@ def evaluate_stability(
     max_pair_cells=1_000_000,
     max_fits=10_000,
     ridge=0.1,
+    dca_design=None,
     require_reference=False,
     apc_universe="retained",
     include_gaps=False,
@@ -404,6 +405,7 @@ def evaluate_stability(
         "min_site_entropy": _fraction(min_site_entropy, "minimum site entropy", math.inf),
         "include_gaps": include_gaps,
         "ridge": ridge,
+        "dca_design": dca_design,
         "apc_universe": apc_universe,
         "require_reference": require_reference,
         "min_state_count": integer(min_state_count, "min_state_count"),
@@ -429,7 +431,9 @@ def evaluate_stability(
         "test_estimand": "score replication on disjoint clades with separately estimated weights and scores on frozen training axes; ranks within each interface; no predictive likelihood or null p-value",
         "selection": "unweighted canonical site QC on training rows; canonical display order at ties; held-out boundary ties receive fractional recovery credit",
         "score_definitions": [
-            get_score(n).metadata(apc_universe=apc_universe, threebody_model="maxent")
+            get_score(n).metadata(
+                apc_universe=apc_universe, threebody_model="maxent", dca_design=dca_design
+            )
             for n in statistics
         ],
         "training_designs": {},

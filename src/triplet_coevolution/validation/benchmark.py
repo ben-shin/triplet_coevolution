@@ -248,9 +248,11 @@ def benchmark_scores(
     digest, labels = _stable_labels(labels_path, store)
     axes = _axes(store, labels)
     comparison = {p: axes[p][0] & (axes[p][1] >= 0) for p in PAIRS}
-    for fields in store.scores.values():
+    for field, fields in store.scores.items():
         for p in PAIRS:
-            comparison[p] &= np.isfinite(fields[p].ravel())
+            comparison[p] &= store.eligible(
+                p, statistic=field, reference_only=True
+            ).ravel() & np.isfinite(fields[p].ravel())
     excluded = []
     for key, label in labels.items():
         pair = key[0]
@@ -281,7 +283,8 @@ def benchmark_scores(
         common_truth = []
         all_clusters = []
         for pair in PAIRS:
-            keep, truth, dist, positions, length = axes[pair]
+            _, truth, dist, positions, length = axes[pair]
+            keep = store.eligible(pair, statistic=field, reference_only=True).ravel()
             maps = [store.maps["ABC".index(c)] for c in pair]
             numbered = [
                 np.array([v is not None for v in m.reference_positions], dtype=bool) for m in maps
@@ -387,6 +390,11 @@ def benchmark_scores(
         stats[field] = {"interfaces": scope, "pooled": pooled, "macro": macro}
     return {
         "schema_version": 2,
+        **(
+            {"dca_design": store.provenance["methods"]["dca_design"]}
+            if store.provenance.get("methods", {}).get("dca_design")
+            else {}
+        ),
         "statistics": stats,
         "label_sha256": digest,
         "label_records": len(labels),
@@ -447,6 +455,8 @@ def write_merged_scores(path: Path, store: ScoreStore, labels_path: Path) -> Non
         "split",
         "score_uncertainty",
     ]
+    if store.dca_counts is not None:
+        fields.extend(("dca_n_valid", "dca_valid_weight", "dca_eligible"))
     for stat in store.scores:
         fields.extend((stat, stat + "_competition_rank", stat + "_rank_percentile"))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,7 +471,10 @@ def write_merged_scores(path: Path, store: ScoreStore, labels_path: Path) -> Non
                 sizes = {}
                 for stat, blocks in store.scores.items():
                     values = blocks[pair].ravel()
-                    idx = np.flatnonzero(keep & np.isfinite(values))
+                    idx = np.flatnonzero(
+                        store.eligible(pair, reference_only=True, statistic=stat).ravel()
+                        & np.isfinite(values)
+                    )
                     ascending = np.sort(values[idx])
                     rank = np.zeros(len(values), dtype=np.int64)
                     rank[idx] = len(idx) + 1 - np.searchsorted(ascending, values[idx], side="right")
@@ -507,6 +520,16 @@ def write_merged_scores(path: Path, store: ScoreStore, labels_path: Path) -> Non
                             "split": label.split if label else "",
                             "score_uncertainty": "unavailable",
                         }
+                        if store.dca_counts is not None:
+                            count, weight = store.support(pair, "dca_apc")
+                            row.update(
+                                dca_n_valid=count[i, j],
+                                dca_valid_weight=weight[i, j],
+                                dca_eligible=int(
+                                    count[i, j] >= store.min_valid
+                                    and weight[i, j] >= store.min_valid_weight
+                                ),
+                            )
                         for stat, blocks in store.scores.items():
                             value = blocks[pair][i, j]
                             if np.isfinite(value):

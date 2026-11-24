@@ -313,6 +313,7 @@ def save_dca_plot(
     *,
     score: str,
     min_valid: int,
+    dca_design=None,
 ) -> Path:
     """Render all three DCA blocks on a shared scale in the selected statistic's units."""
     from triplet_coevolution.inference.scores import get_score
@@ -349,7 +350,12 @@ def save_dca_plot(
                 ylabel=f"{pair[0]} · {x.reference_id}",
                 title=f"{pair} {score}",
             )
-        fig.colorbar(image, ax=axes, shrink=0.8, label=f"{score} ({spec.units})")
+        fig.colorbar(
+            image,
+            ax=axes,
+            shrink=0.8,
+            label=f"{score} ({spec.metadata(dca_design=dca_design)['units']})",
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         fig.savefig(path, dpi=180, bbox_inches="tight")
     finally:

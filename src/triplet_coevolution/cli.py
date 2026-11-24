@@ -30,7 +30,13 @@ from triplet_coevolution.analysis_plan import (
 )
 from triplet_coevolution.calibration import calibrate
 from triplet_coevolution.clade_workflow import CladePolicy, split, stability
+from triplet_coevolution.conditional_workflow import (
+    conditional,
+    conditional_design,
+    write_conditional,
+)
 from triplet_coevolution.core.coordinates import build_reference_map
+from triplet_coevolution.dca_compare import dca_compare
 from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
 from triplet_coevolution.inference.scores import get_score, mi_with_apc_policy, pair_coverage
@@ -62,6 +68,8 @@ app.command("benchmark")(benchmark)
 app.command("export")(export)
 app.command("report")(report)
 app.command("calibrate")(calibrate)
+app.command("conditional")(conditional)
+app.command("dca-compare")(dca_compare)
 app.command("stability")(stability)
 app.command("split")(split)
 app.command("structure-map")(structure_map)
@@ -121,6 +129,8 @@ def _stage_run(out: Path) -> Iterator[Path]:
                 # Directories come before their contents. The manifest marks a completed run.
                 marker_names = (
                     "stability_summary.json",
+                    "conditional_summary.json",
+                    "dca_comparison.json",
                     "split_manifest.json",
                     "calibration.json",
                     "structure_summary.json",
@@ -260,7 +270,12 @@ def analyze(
             "--plots/--no-plots", help="Save PNG heatmaps of the full filtered score matrices."
         ),
     ] = False,
-    dca: Annotated[bool, typer.Option("--dca", help="Fit a joint mean-field Potts model.")] = False,
+    dca: Annotated[
+        bool,
+        typer.Option(
+            "--dca", help="Fit direct couplings with the selected backend and conditioning panel."
+        ),
+    ] = False,
     threebody: Annotated[
         bool, typer.Option("--threebody", help="Estimate a three-site Potts interaction for ABC.")
     ] = False,
@@ -437,15 +452,62 @@ def analyze(
             help="Inspect inputs, QC and allocation estimates without fitting or permuting.",
         ),
     ] = False,
-    null_policy: Annotated[Path | None, typer.Option("--null-policy", help="Named null-model and registered-statistic calibration JSON.")] = None,
-    stability_policy: Annotated[Path | None, typer.Option("--stability-policy",help="Clade hold-out and bootstrap policy JSON applied to original input rows and sites.")] = None,
+    null_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--null-policy", help="Named null-model and registered-statistic calibration JSON."
+        ),
+    ] = None,
+    stability_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--stability-policy",
+            help="Clade hold-out and bootstrap policy JSON applied to original input rows and sites.",
+        ),
+    ] = None,
+    conditional_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--conditional-policy",
+            help="Fit nested pair and three-site models on prespecified held-out clades.",
+        ),
+    ] = None,
+    dca_backend: Annotated[
+        str | None,
+        typer.Option("--dca-backend", help="mf or plm (regularized asymmetric pseudolikelihood)."),
+    ] = None,
+    dca_conditioning: Annotated[
+        str | None,
+        typer.Option("--dca-conditioning", help="joint ABC or pairwise separate interface fits."),
+    ] = None,
+    dca_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--dca-policy", help="DCA feature, regularization, solver and budget policy JSON."
+        ),
+    ] = None,
 ) -> dict | None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
     options = locals().copy()
     try:
+        from triplet_coevolution.inference.dca_models import DCADesign
         from triplet_coevolution.msa.diagnostics import QCPolicy, inspect_qc, write_qc
         from triplet_coevolution.validation.null_policy import NullPolicy, calibration_plan
 
+        nested = conditional_design(conditional_policy) if conditional_policy else None
+        design = None
+        if any(x is not None for x in (dca_policy, dca_backend, dca_conditioning)):
+            if not dca:
+                raise ValueError("DCA backend, conditioning and policy require --dca")
+            policy_stamp = _file_stamp(dca_policy) if dca_policy else None
+            design = DCADesign.parse(
+                dca_policy,
+                backend=dca_backend,
+                conditioning=dca_conditioning,
+                ridge=ridge if ridge != 0.1 else None,
+            )
+            if legacy and design != DCADesign(ridge=ridge):
+                raise ValueError("--legacy requires the original joint mean-field DCA settings")
         named_null = NullPolicy.from_config(null_policy) if null_policy else None
         clade_policy = CladePolicy.from_config(stability_policy) if stability_policy else None
         if named_null and permutations:
@@ -568,6 +630,8 @@ def analyze(
             ("local_policy", local_policy),
             ("null_policy", null_policy),
             ("stability_policy", stability_policy),
+            ("dca_policy", dca_policy),
+            ("conditional_policy", conditional_policy),
             ("triplet_candidates", triplet_candidates),
             ("contacts", contacts),
             ("site_panel", site_panel),
@@ -576,6 +640,8 @@ def analyze(
             if path is not None:
                 paths[key] = path.expanduser()
         stamps = {key: _file_stamp(path) for key, path in paths.items()}
+        if dca_policy and stamps["dca_policy"] != policy_stamp:
+            raise ValueError("DCA policy changed while reading")
         inputs = {key: _input_identity(path) for key, path in paths.items()}
         if budget is not None:
             cells = input_cells(paths)
@@ -696,6 +762,7 @@ def analyze(
             candidate_mode=candidate_mode,
             candidate_policy=paths.get("candidate_policy"),
             local_policy=paths.get("local_policy"),
+            dca_design=design,
             threebody_model=threebody_model,
             require_reference=require_reference,
             max_triplets=max_triplets,
@@ -747,6 +814,16 @@ def analyze(
                     }
                 )
             plan["calibration"]["tree_scenarios"] = plans
+        if nested:
+            group_design, settings_grid, _ = nested
+            memberships, _, test_groups = group_design.partition(table, inputs["matches"]["sha256"])
+            plan["conditional"] = {
+                "source_rows": len(table.matches),
+                "source_groups": len(set(memberships.values())),
+                "planned_folds": 1 if test_groups else len(set(memberships.values())),
+                "prespecified_l2": [v.l2 for v in settings_grid],
+                "scope": "training-only feature selection and model-size validation per fold",
+            }
         if clade_policy:
             from triplet_coevolution.validation.clade_stability import make_split_plan
 
@@ -772,7 +849,10 @@ def analyze(
             "dca": dca,
             "threebody": threebody,
             "threebody_model": threebody_model if threebody else None,
-            "ridge": ridge if dca else None,
+            "ridge": (design.ridge if design else ridge)
+            if dca and (not design or design.backend == "mf")
+            else None,
+            **({"dca_design": design.metadata()} if design else {}),
             "pseudocount": pseudocount if threebody and threebody_model == "local" else None,
             "global_l2": global_l2 if threebody and threebody_model == "global" else None,
             "require_reference": require_reference,
@@ -907,6 +987,7 @@ def analyze(
                     candidate_mode=candidate_mode,
                     candidate_policy=paths.get("candidate_policy"),
                     local_policy=paths.get("local_policy"),
+                    dca_design=design,
                     triplet_candidates=paths.get("triplet_candidates"),
                     permutations=permutations,
                     seed=seed,
@@ -919,7 +1000,13 @@ def analyze(
                     score_sink=collect_observed,
                     **table_options,
                 )
-                for key in ("triplet_candidates", "contacts", "local_policy", "candidate_policy"):
+                for key in (
+                    "triplet_candidates",
+                    "contacts",
+                    "local_policy",
+                    "candidate_policy",
+                    "dca_policy",
+                ):
                     if key in paths and _file_stamp(paths[key]) != stamps[key]:
                         raise ValueError(f"input changed while reading: {paths[key]}")
             figures = (
@@ -929,7 +1016,12 @@ def analyze(
             )
             if plots and observed_dca:
                 figures["dca"] = save_dca_plot(
-                    stage / "figures", observed_dca, maps, score=dca_score, min_valid=min_valid
+                    stage / "figures",
+                    observed_dca,
+                    maps,
+                    score=dca_score,
+                    min_valid=min_valid,
+                    dca_design=design.metadata() if design else None,
                 )
             summary = {
                 "schema_version": 2,
@@ -998,7 +1090,9 @@ def analyze(
                 "mi_kernel": mi_kernel,
                 "statistics": [
                     get_score(name).metadata(
-                        apc_universe=apc_universe, threebody_model=threebody_model
+                        apc_universe=apc_universe,
+                        threebody_model=threebody_model,
+                        dca_design=design.metadata() if design else None,
                     )
                     for name in selected
                 ],
@@ -1070,6 +1164,23 @@ def analyze(
                 }
                 summary["outputs"]["calibration"] = "calibration/calibration.json"
                 summary["outputs"]["calibration_report"] = "calibration/report.html"
+            if nested:
+                if _file_stamp(paths["conditional_policy"]) != stamps["conditional_policy"]:
+                    raise ValueError("conditional policy changed during analysis")
+                fitted = write_conditional(
+                    stage / "conditional",
+                    nested,
+                    msa=matched,
+                    maps=original_maps,
+                    table=table,
+                    digests={k: inputs[k]["sha256"] for k in ("A", "B", "C", "matches")},
+                )
+                summary["conditional"] = {
+                    "split_sha256": fitted["split_sha256"],
+                    "grid": fitted["grid"],
+                }
+                summary["outputs"]["conditional"] = "conditional/conditional_summary.json"
+                summary["outputs"]["conditional_report"] = "conditional/report.html"
             if clade_policy:
                 from triplet_coevolution.clade_workflow import _write_stability
 

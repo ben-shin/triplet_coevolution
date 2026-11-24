@@ -13,6 +13,7 @@ from triplet_coevolution.inference.candidates import (
     select_candidates,
     write_candidate_manifest,
 )
+from triplet_coevolution.inference.dca_models import DCADesign
 from triplet_coevolution.inference.global_potts import global_triples
 from triplet_coevolution.inference.local_options import (
     PAIR_SCREENS,
@@ -129,6 +130,7 @@ def write_advanced_results(
     score="mi_apc",
     threebody_model="local",
     global_l2=0.1,
+    dca_design=None,
     dca_score: str = "dca_apc",
     threebody_score: str | None = None,
     candidate_mode: str | None = None,
@@ -215,6 +217,23 @@ def write_advanced_results(
     proposal = None
     manifest = None
     observed_dca_for_screen = None
+    design = DCADesign.parse(
+        dca_design, ridge=ridge if dca_design is None or ridge != 0.1 else None
+    )
+    dca_diagnostics = {}
+
+    def fitted_dca(data, row_weights, *, draw=False):
+        return _fit(
+            "dca",
+            design.fit,
+            data,
+            row_weights,
+            mf=direct_couplings,
+            diagnostics=None if draw else dca_diagnostics,
+            min_valid=min_valid,
+            min_valid_weight=min_valid_weight,
+        )
+
     if threebody:
         screen_scores = None
         if mode in PAIR_SCREENS and screen.get("training_ids") is None:
@@ -223,15 +242,7 @@ def write_advanced_results(
                 if not dca:
                     raise ValueError("DCA candidate screening requires --dca")
                 observed_dca_for_screen = dca_with_apc_policy(
-                    _fit(
-                        "dca",
-                        direct_couplings,
-                        msa,
-                        weights,
-                        ridge=ridge,
-                        min_valid=min_valid,
-                        min_valid_weight=min_valid_weight,
-                    ),
+                    fitted_dca(msa, weights),
                     maps,
                     apc_universe,
                 )
@@ -298,7 +309,8 @@ def write_advanced_results(
     settings = {
         "dca": dca,
         "threebody": threebody,
-        "ridge": ridge,
+        "ridge": design.ridge if design.backend == "mf" else None,
+        **({"dca_design": design.metadata()} if dca_design is not None and dca else {}),
         "pseudocount": pseudocount,
         "max_triplets": max_triplets,
         "seed": seed,
@@ -318,7 +330,11 @@ def write_advanced_results(
         "threebody_statistic": threebody_score if threebody else None,
         "apc_universe": apc_universe,
         "score_definitions": {
-            key: spec.metadata(apc_universe=apc_universe, threebody_model=threebody_model)
+            key: spec.metadata(
+                apc_universe=apc_universe,
+                threebody_model=threebody_model,
+                dca_design=design.metadata() if dca_design is not None else None,
+            )
             for key, spec in specs.items()
             if key == "mi" or (key == "dca" and dca) or (key == "threebody" and threebody)
         },
@@ -351,15 +367,7 @@ def write_advanced_results(
             if not draw and observed_dca_for_screen is not None:
                 dca_blocks = observed_dca_for_screen
             else:
-                fitted = _fit(
-                    "dca",
-                    direct_couplings,
-                    data,
-                    row_weights,
-                    ridge=ridge,
-                    min_valid=min_valid,
-                    min_valid_weight=min_valid_weight,
-                )
+                fitted = fitted_dca(data, row_weights, draw=draw)
                 dca_blocks = dca_with_apc_policy(fitted, maps, apc_universe)
             pair_scores["dca"] = {pair: specs["dca"].values(b) for pair, b in dca_blocks.items()}
         diagnostics = {}
@@ -610,6 +618,7 @@ def write_advanced_results(
         outputs["contacts"] = {"path": "contacts.json", "rows": len(labels)}
     return {
         "settings": settings,
+        **({"dca_diagnostics": dca_diagnostics} if dca else {}),
         "outputs": outputs,
         "ranking": ranking,
         "selection_scope": {

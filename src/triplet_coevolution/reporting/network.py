@@ -15,6 +15,7 @@ class RankedTable:
     score: str
     prefixes: tuple[str, ...]
     rows: int
+    dca_design: dict | None = None
 
     def first_rows(self, directory: Path, limit: int):
         delimiter = "," if self.path.endswith(".csv") else "\t"
@@ -32,10 +33,17 @@ def ranked_tables(summary: dict) -> list[RankedTable]:
         ))
     for pair in ("AB", "AC", "BC"):
         if meta := advanced.get(f"dca_{pair.lower()}"):
-            tables.append(RankedTable(
-                pair, "DCA", meta["path"], selection.get("dca") or "dca_frobenius",
-                ("x", "y"), meta["rows"]
-            ))
+            tables.append(
+                RankedTable(
+                    pair,
+                    "DCA",
+                    meta["path"],
+                    selection.get("dca") or "dca_frobenius",
+                    ("x", "y"),
+                    meta["rows"],
+                    summary["settings"].get("dca_design"),
+                )
+            )
     if meta := advanced.get("threebody_abc"):
         tables.append(
             RankedTable(
@@ -96,9 +104,12 @@ def write_network(directory: Path, tables: list[RankedTable], limit: int = 25) -
                          reference_id=reference, reference_position=position,
                          label=f"{component} {reference} {position or ('alignment column ' + col)}")
             evidence = {
-                "method": table.score, "rank": row["rank"], "score": row[table.score],
+                "method": table.score,
+                "rank": row["rank"],
+                "score": row[table.score],
                 "n_valid": row["n_valid"],
-                "direction": spec.direction, "units": spec.units,
+                "direction": spec.direction,
+                "units": spec.metadata(dca_design=table.dca_design)["units"],
                 "competition_rank": row.get("competition_rank", ""),
             }
             if len(ids) == 2:

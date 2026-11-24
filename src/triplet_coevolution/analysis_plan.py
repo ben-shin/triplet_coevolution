@@ -112,6 +112,7 @@ def estimate_model(
     candidate_mode=None,
     candidate_policy=None,
     local_policy=None,
+    dca_design=None,
 ):
     from triplet_coevolution.inference.weights import weighting_preflight
 
@@ -282,7 +283,16 @@ def estimate_model(
     choice = None
     dca_bytes = 0
     gram_flops = 0
-    if dca:
+    dca_plan = None
+    if dca and dca_design is not None:
+        try:
+            dca_plan = dca_design.preflight(msa, positive)
+            choice = dca_design.backend + "_" + dca_design.conditioning
+            dca_bytes = dca_plan["estimated_numeric_bytes"]
+            gram_flops = None
+        except ValueError as exc:
+            blockers.append({"method": "dca", "reason": str(exc)})
+    elif dca:
         dual = n < dimensions and n <= MAX_SOLVE_DIMENSION and n * dimensions <= MAX_DUAL_ELEMENTS
         choice = "dual" if dual else "primal"
         if not dual and dimensions > MAX_SOLVE_DIMENSION:
@@ -456,6 +466,7 @@ def estimate_model(
             "min_overlap": min_overlap,
         },
         "dca_solver": choice,
+        "dca_preflight": dca_plan,
         "dca_limits": {
             "max_solve_dimension": MAX_SOLVE_DIMENSION,
             "max_dual_elements": MAX_DUAL_ELEMENTS,

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "models": {
+    "mf-joint": {"backend": "mf", "conditioning": "joint", "ridge": 0.1},
+    "mf-pair": {"backend": "mf", "conditioning": "pairwise", "ridge": 0.1},
+    "plm-joint": {"backend": "plm", "conditioning": "joint", "plm": {"lambda_h": 0.01, "lambda_j": 0.01}},
+    "plm-pair": {"backend": "plm", "conditioning": "pairwise", "plm": {"lambda_h": 0.01, "lambda_j": 0.01}}
+  }
+}

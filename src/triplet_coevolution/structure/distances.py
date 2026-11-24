@@ -149,8 +149,8 @@ def _score_axes(store, mapping):
         axes[m.component] = lookup
     ranks = {}
     for pair in PAIRS:
-        keep = store.eligible(pair, reference_only=True)
         for stat, blocks in store.scores.items():
+            keep = store.eligible(pair, reference_only=True, statistic=stat)
             vals = blocks[pair]
             mask = keep & np.isfinite(vals)
             ordered = np.sort(vals[mask])

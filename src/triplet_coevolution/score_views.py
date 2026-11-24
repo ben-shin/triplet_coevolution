@@ -187,7 +187,19 @@ def write_ranked_views(
                 count = sum(
                     1 for _ in csv.DictReader(stream, delimiter="," if fmt == "csv" else "\t")
                 )
-            tables.append(RankedTable(pair, method, path.name, score, ("x", "y"), count))
+            tables.append(
+                RankedTable(
+                    pair,
+                    method,
+                    path.name,
+                    score,
+                    ("x", "y"),
+                    count,
+                    store.provenance.get("methods", {}).get("dca_design")
+                    if method == "DCA"
+                    else None,
+                )
+            )
     return tables
 
 
@@ -221,6 +233,7 @@ def render_score_view(
                 dca,
                 store.maps,
                 score=tables[-1].score,
+                dca_design=store.provenance.get("methods", {}).get("dca_design"),
                 min_valid=store.min_valid,
             )
         for name, path in figures.items():
@@ -234,13 +247,19 @@ def render_score_view(
         write_json(directory / "benchmark.json", result)
         files.append("benchmark.json")
         overview = benchmark_overview(result)
+    backend = store.provenance.get("methods", {}).get("dca_design", {})
+    backend_text = (
+        f"DCA estimator {backend.get('backend', 'mf')} with {backend.get('conditioning', 'joint')} conditioning."
+        if "dca_apc" in store.scores
+        else ""
+    )
     pages = "".join(f"<li>{_link(path, path)}</li>" for path in files)
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Archived pair scores</title>
 <style>{STYLE}</style></head><body><header><h1>Archived pair scores</h1></header><main>
 <section><h2>Score universe</h2><ul>{"".join(reference_rows)}</ul>
 <p>Ranked views use the stored coordinates, minimum support of {store.min_valid} observations and {store.min_valid_weight:g} weight, and
-{escape(store.provenance.get("apc_universe", "retained"))} APC axes. Display limits apply separately to each interface.</p></section>
+{escape(store.provenance.get("apc_universe", "retained"))} APC axes. Display limits apply separately to each interface. {escape(backend_text)}</p></section>
 <section><h2>Pair rankings</h2>{_rankings(directory, tables)}{"".join(pictures)}</section>
 {benchmark_section(overview)}<section><h2>Files</h2><ul>{pages}</ul></section></main></body></html>"""
     (directory / "report.html").write_text(html, encoding="utf-8")

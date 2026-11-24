@@ -24,6 +24,7 @@ FAMILIES = {"mi": ("mi_bits", "mi_apc"), "dca": ("dca_frobenius", "dca_apc")}
 MANIFEST_NAME = "score_manifest.json"
 PAYLOAD_NAME = "pair_scores.npz"
 SCHEMA = "triplet.pair_scores.v1"
+METHOD_SUPPORT_SCHEMA = "triplet.pair_scores.v2"
 CONVENTION = "Current and original exported columns and reference positions are one-based. Stored original_columns are zero-based. A null reference position denotes a reference gap."
 
 
@@ -103,16 +104,26 @@ class ScoreStore:
     provenance: dict
     min_valid: int
     require_reference: bool
+    dca_counts: dict[str, np.ndarray] | None = None
+    dca_weights: dict[str, np.ndarray] | None = None
+
+    def support(self, pair, statistic=None):
+        if self.dca_counts is not None and statistic in FAMILIES["dca"]:
+            return self.dca_counts[pair], self.dca_weights[pair]
+        return self.n_valid[pair], self.valid_weight[pair]
 
     @property
     def min_valid_weight(self) -> float:
         """Older native and v1 runs used a row-count cutoff alone."""
         return check_min_valid_weight(self.provenance.get("min_valid_weight", 0.0))
 
-    def eligible(self, pair: str, *, reference_only: bool = False) -> np.ndarray:
+    def eligible(
+        self, pair: str, *, reference_only: bool = False, statistic: str | None = None
+    ) -> np.ndarray:
         """Return support and reference eligibility, independent of finite method scores."""
-        keep = self.n_valid[pair] >= self.min_valid
-        keep &= self.valid_weight[pair] >= self.min_valid_weight
+        count, weight = self.support(pair, statistic)
+        keep = count >= self.min_valid
+        keep &= weight >= self.min_valid_weight
         if self.require_reference or reference_only:
             a, b = (self.maps["ABC".index(c)] for c in pair)
             x, y = (
@@ -148,8 +159,7 @@ class ScoreStore:
             p: DCABlock(
                 self.scores["dca_frobenius"][p],
                 self.scores["dca_apc"][p],
-                self.n_valid[p],
-                self.valid_weight[p],
+                *self.support(p, "dca_apc"),
             )
             for p in PAIRS
             if "dca_apc" in self.scores
@@ -199,11 +209,22 @@ def _validate(store):
         raise ValueError("missing MI gap policy")
     if prov.get("apc_universe", "retained") not in {"retained", "reference"}:
         raise ValueError("unknown APC universe")
+    if (store.dca_counts is None) != (store.dca_weights is None):
+        raise ValueError("incomplete method-specific DCA support")
+    if store.dca_counts is not None and (
+        "dca_apc" not in store.scores or not prov.get("methods", {}).get("dca_design")
+    ):
+        raise ValueError("method-specific support requires a declared DCA design")
     sparse_legacy = prov.get("origin") == "legacy_uncapped_or_complete_views"
     for name, blocks in {
         **store.scores,
         "n_valid": store.n_valid,
         "valid_weight": store.valid_weight,
+        **(
+            {"dca_n_valid": store.dca_counts, "dca_valid_weight": store.dca_weights}
+            if store.dca_counts is not None
+            else {}
+        ),
     }.items():
         if set(blocks) != set(PAIRS):
             raise ValueError(f"missing interface in {name}")
@@ -211,7 +232,7 @@ def _validate(store):
             shape = tuple(store.maps["ABC".index(c)].n_sites for c in pair)
             if not isinstance(block, np.ndarray) or block.shape != shape:
                 raise ValueError(f"invalid matrix shape for {name} {pair}")
-            if name == "n_valid":
+            if name in ("n_valid", "dca_n_valid"):
                 if (
                     block.dtype.kind not in "iu"
                     or np.any(block < (-1 if sparse_legacy else 0))
@@ -220,8 +241,12 @@ def _validate(store):
                     raise ValueError(f"invalid pair counts for {pair}")
             elif block.dtype.kind != "f" or np.isinf(block).any():
                 raise ValueError(f"invalid numeric matrix for {name} {pair}")
-            elif name == "valid_weight" and (
-                not np.array_equal(np.isnan(block), store.n_valid[pair] < 0)
+            elif name in ("valid_weight", "dca_valid_weight") and (
+                not np.array_equal(
+                    np.isnan(block),
+                    (store.dca_counts[pair] if name == "dca_valid_weight" else store.n_valid[pair])
+                    < 0,
+                )
                 or np.any(block < 0)
                 or np.any(block > weight + 1e-8 * max(1, weight))
             ):
@@ -229,10 +254,12 @@ def _validate(store):
             elif (
                 name in store.scores
                 and min_weight
-                and np.any((store.valid_weight[pair] < min_weight) & np.isfinite(block))
+                and np.any((store.support(pair, name)[1] < min_weight) & np.isfinite(block))
             ):
                 raise ValueError(f"finite {name} below declared minimum weight in {pair}")
-            elif name in store.scores and np.any((store.n_valid[pair] < 0) & np.isfinite(block)):
+            elif name in store.scores and np.any(
+                (store.support(pair, name)[0] < 0) & np.isfinite(block)
+            ):
                 raise ValueError(f"finite {name} on a legacy cell of unknown support in {pair}")
 
 
@@ -254,13 +281,15 @@ def from_results(
     if dca:
         if set(dca) != set(PAIRS):
             raise ValueError("DCA needs all three interface blocks")
-        for pair, block in dca.items():
-            if not np.array_equal(block.n_valid, counts[pair]) or not np.allclose(
-                block.valid_weight, weights[pair], rtol=1e-10, atol=1e-10
-            ):
-                raise ValueError(
-                    "DCA and MI support differ; separate support definitions are required"
-                )
+        design = provenance.get("methods", {}).get("dca_design")
+        if not design and any(
+            not np.array_equal(block.n_valid, counts[p])
+            or not np.allclose(block.valid_weight, weights[p], rtol=1e-10, atol=1e-10)
+            for p, block in dca.items()
+        ):
+            raise ValueError(
+                "DCA and MI support differ; separate support definitions are required in provenance"
+            )
         scores.update(
             dca_frobenius={p: b.frobenius for p, b in dca.items()},
             dca_apc={p: b.corrected for p, b in dca.items()},
@@ -281,7 +310,15 @@ def from_results(
         for name, obj in prov.get("inputs", {}).items()
     }
     store = ScoreStore(
-        tuple(maps), scores, counts, weights, prov, int(mi.min_valid), require_reference
+        tuple(maps),
+        scores,
+        counts,
+        weights,
+        prov,
+        int(mi.min_valid),
+        require_reference,
+        {p: b.n_valid for p, b in dca.items()} if dca and design else None,
+        {p: b.valid_weight for p, b in dca.items()} if dca and design else None,
     )
     _validate(store)
     return store
@@ -290,7 +327,8 @@ def from_results(
 def _descriptors(store):
     return {
         name: get_score(name).metadata(
-            apc_universe=store.provenance.get("apc_universe", "retained")
+            apc_universe=store.provenance.get("apc_universe", "retained"),
+            dca_design=store.provenance.get("methods", {}).get("dca_design"),
         )
         for name in store.scores
     }
@@ -312,12 +350,17 @@ def write_score_store(directory: Path, store: ScoreStore) -> Path:
                 **store.scores,
                 "n_valid": store.n_valid,
                 "valid_weight": store.valid_weight,
+                **(
+                    {"dca_n_valid": store.dca_counts, "dca_valid_weight": store.dca_weights}
+                    if store.dca_counts is not None
+                    else {}
+                ),
             }.items()
             for pair, a in blocks.items()
         }
         np.savez_compressed(stage / PAYLOAD_NAME, **arrays)
         manifest = {
-            "schema": SCHEMA,
+            "schema": METHOD_SUPPORT_SCHEMA if store.dca_counts is not None else SCHEMA,
             "coordinate_convention": CONVENTION,
             "payload": PAYLOAD_NAME,
             "payload_sha256": file_digest(stage / PAYLOAD_NAME),
@@ -352,12 +395,12 @@ def load_score_store(path: Path) -> ScoreStore:
     if path.is_dir():
         path = path / MANIFEST_NAME
     try:
-        meta = json.loads(path.read_text(encoding="utf-8"),object_pairs_hook=_unique_members)
+        meta = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_members)
         saved = meta.pop("manifest_sha256")
         if hashlib.sha256(_json_bytes(meta)).hexdigest() != saved:
             raise ValueError("score manifest checksum mismatch")
         if (
-            meta["schema"] != SCHEMA
+            meta["schema"] not in (SCHEMA, METHOD_SUPPORT_SCHEMA)
             or meta["payload"] != PAYLOAD_NAME
             or meta["coordinate_convention"] != CONVENTION
         ):
@@ -368,6 +411,8 @@ def load_score_store(path: Path) -> ScoreStore:
             for m in meta["coordinates"]
         )
         fields = [*meta["scores"], "n_valid", "valid_weight"]
+        if meta["schema"] == METHOD_SUPPORT_SCHEMA:
+            fields.extend(["dca_n_valid", "dca_valid_weight"])
         with payload.open("rb") as handle:
             if hashlib.file_digest(handle, "sha256").hexdigest() != meta["payload_sha256"]:
                 raise ValueError("score payload checksum mismatch")
@@ -385,6 +430,8 @@ def load_score_store(path: Path) -> ScoreStore:
             meta["provenance"],
             meta["min_valid"],
             meta["require_reference"],
+            blocks.get("dca_n_valid"),
+            blocks.get("dca_valid_weight"),
         )
         _validate(store)
         if _descriptors(store) != meta["scores"]:

@@ -175,7 +175,11 @@ def _one_calibration(
 ):
     model = CalibrationModel(data, policy, tree_inputs=tree_inputs)
     definitions = {
-        s.name: s.metadata(apc_universe=model.apc, threebody_model=model.method)
+        s.name: s.metadata(
+            apc_universe=model.apc,
+            threebody_model=model.method,
+            dca_design=model.settings.get("dca_design"),
+        )
         for s in model.specs
     }
     scientific_policy = {
