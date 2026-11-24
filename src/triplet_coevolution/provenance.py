@@ -13,6 +13,16 @@ import numpy as np
 from triplet_coevolution._revision import ARCHIVE_COMMIT, BUILD_DIRTY, REVISION_SOURCE
 
 
+def report_assets_digest() -> str:
+    """Identify the exact installed stylesheet and script embedded in the offline explorer."""
+    directory = Path(__file__).resolve().parent / "reporting"
+    digest = hashlib.sha256()
+    for name in ("explorer.css", "explorer.js"):
+        digest.update(name.encode("ascii") + b"\0")
+        digest.update(hashlib.sha256((directory / name).read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def package_code_digest():
     """Hash the installed Python source independently of the current working directory."""
     package = Path(__file__).resolve().parent
@@ -50,6 +60,7 @@ def software_identity() -> dict:
     return {
         "git": git,
         "code_sha256": package_code_digest(),
+        "report_assets_sha256": report_assets_digest(),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "architecture": platform.machine(),

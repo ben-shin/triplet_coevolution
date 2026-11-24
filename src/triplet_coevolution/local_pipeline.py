@@ -26,7 +26,11 @@ from triplet_coevolution.operations import (
     stage,
 )
 from triplet_coevolution.policy_inputs import dependencies
-from triplet_coevolution.provenance import package_code_digest, software_identity
+from triplet_coevolution.provenance import (
+    package_code_digest,
+    report_assets_digest,
+    software_identity,
+)
 from triplet_coevolution.search.local_tools import tools_for
 from triplet_coevolution.workflow import _inputs
 
@@ -185,6 +189,7 @@ def run_pipeline(
         return preview
     runtime = software_identity()
     runtime.pop("git", None)  # A documentation-only commit has no numerical effect.
+    renderer = runtime.pop("report_assets_sha256")
     from importlib.metadata import PackageNotFoundError, version
 
     for name in ("matplotlib", "scipy"):
@@ -286,7 +291,12 @@ def run_pipeline(
                         )
                     if file_id(config) != original_config_id:
                         raise ValueError("workflow configuration changed during the run")
-                    return inputs()
+                    identity = inputs()
+                    if name in {"score", "report"}:
+                        if report_assets_digest() != renderer:
+                            raise ValueError("installed report assets changed during pipeline")
+                        identity["report_assets_sha256"] = renderer
+                    return identity
 
                 return stage(
                     root,

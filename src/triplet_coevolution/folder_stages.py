@@ -17,7 +17,11 @@ from triplet_coevolution.operations import (
     stage,
 )
 from triplet_coevolution.policy_inputs import dependencies
-from triplet_coevolution.provenance import package_code_digest, software_identity
+from triplet_coevolution.provenance import (
+    package_code_digest,
+    report_assets_digest,
+    software_identity,
+)
 
 
 def worker(action, job_file, flag, output):
@@ -87,6 +91,7 @@ def run_folder_stages(directory, work_dir, online=None, cache_dir=None, plots=No
     }
     runtime = software_identity()
     runtime.pop("git", None)
+    renderer = runtime.pop("report_assets_sha256")
     with pipeline_workspace(root):
         journal = Journal(root, emit)
         cfg, _, _ = family_config(None, folder, uniprot=online, automatic=True)
@@ -150,6 +155,8 @@ def run_folder_stages(directory, work_dir, online=None, cache_dir=None, plots=No
                 journal.check_output(prior)
                 if package_code_digest() != runtime["code_sha256"]:
                     raise ValueError("installed source changed during pipeline")
+                if report_assets_digest() != renderer:
+                    raise ValueError("installed report assets changed during pipeline")
                 current, _, _ = family_config(None, folder, uniprot=online, automatic=True)
                 cfg_files = {}
                 for kind, v in current["analysis"].items():
@@ -158,6 +165,7 @@ def run_folder_stages(directory, work_dir, online=None, cache_dir=None, plots=No
                 return {
                     "preparation": prep_hash,
                     "runtime": runtime,
+                    "report_assets_sha256": renderer,
                     "analysis": {
                         k: str(v) if isinstance(v, Path) else v
                         for k, v in current["analysis"].items()

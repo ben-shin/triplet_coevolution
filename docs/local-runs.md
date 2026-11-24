@@ -20,7 +20,7 @@ triplet validate-inputs --input input
 triplet run --input input --offline --work-dir results/family-jobs
 ~~~
 
-The folder workflow keeps separate evidence/preparation and scoring/report receipts. Complete offline input inventories and closed lookup caches can be reused. Network-enabled calls resolve a fresh evidence stage each invocation and can use the normal provider cache for previous queries. The terminal scientific status and exit code retain their usual meaning, including partial, no matches and unavailable providers. Its report includes the specific matching or scoring blockers. A work directory lives outside the input project.
+The folder workflow keeps separate evidence/preparation and scoring/report receipts. Native scoring and report generation bind the installed explorer stylesheet and JavaScript bytes to their cache identities. Changing either reuses eligible input preparation, then republishes the affected HTML under a new receipt. The original report is preserved. Both cache paths verify the asset digests again before publishing. Complete offline input inventories and closed lookup caches can be reused. Network-enabled calls resolve a fresh evidence stage each invocation and can use the normal provider cache for previous queries. The terminal scientific status and exit code retain their usual meaning, including partial, no matches and unavailable providers. Its report includes the specific matching or scoring blockers. A work directory lives outside the input project.
 
 ## Before allocating a model
 
