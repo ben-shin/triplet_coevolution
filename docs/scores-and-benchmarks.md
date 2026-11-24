@@ -37,6 +37,8 @@ Provide a tab-separated file with `x_component`, `x_reference_id`, `x_reference_
 
 For repeated independent biological units, supply credible `cluster_id` labels and use `triplet benchmark --bootstrap 1000 --seed 7 …` or the native `--benchmark-bootstrap` option. Inspect the reported unit count, valid draws and interval status. Multiple residue pairs from the same structure do not provide independent system replicates. Structural contact and triple ground truth require separate validation. [Scientific release gates](implementation-ledger.md)
 
+Use repeated `--top-k` values on `benchmark`, repeated `--benchmark-k` values on `analyze`, or a JSON list in `analysis.benchmark_k` to change retrieval cutoffs. The default evaluates 10, 25, 50 and 100 pairs together with L, L/2 and L/5. L is the length of the shorter retained, numbered interface axis.
+
 ## Migrating from 1.0–1.2
 
 Native manifests and ranked headers now use analysis schema 2. Use `triplet analyze --legacy --dca …` to select v1.0 scalar MI arithmetic, raw Frobenius DCA ranking, retained-axis APC, and RMS triple ranking. This retains legacy numeric semantics and writes the current headers and archive. A normal run uses the batched MI kernel from 1.2. Numerically tiny changes near tied scores can change AP and ranks. Use the recorded kernel and score to interpret comparisons. `--dca-score dca_frobenius` changes just the DCA statistic. Raw and adjusted pair matrices remain available in either mode.
