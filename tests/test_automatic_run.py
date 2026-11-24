@@ -697,3 +697,51 @@ def test_folder_run_reconciles_reported_and_local_assemblies(
     else:
         assert not any(r["selected"] == "1" for r in records)
         assert {r["genome_id"] for r in records} == {gca, gcf}
+
+
+def test_project_qc_replays_from_published_analysis_and_reports_blockers(tmp_path, monkeypatch):
+    base = tmp_path / "input"
+    _folders(base)
+    policy = base / "qc.json"
+    policy.write_text(json.dumps({"rows": {"A": {"min_canonical": 5}}}))
+    (base / "project.json").write_text(
+        json.dumps(
+            {
+                "analysis": {
+                    "qc_policy": "qc.json",
+                    "weight_policy": "component",
+                    "weight_component": "B",
+                    "memory_mib": 8,
+                    "permutations": 0,
+                }
+            }
+        )
+    )
+    out = tmp_path / "blocked"
+    result = _run(base, out, "--offline")
+    assert result.exit_code == 3, (result.output, result.exception)
+    summary = _json(out / "workflow_summary.json")
+    assert summary["status"] == "insufficient_data" and not summary["ready_for_analysis"]
+    assert summary["analyze_args"] is None and (out / summary["matches"]).is_file()
+    plan_file = out / summary["qc_plan"]
+    plan = _json(plan_file)
+    assert _json(plan_file.parent / plan["diagnostics"]["summary"])["retained_observations"] == 0
+    assert (plan_file.parent / plan["inputs"]["A"]["path"]).is_file()
+    assert summary["qc_plan"] in (out / "report.html").read_text(encoding="utf8")
+
+    policy.write_text(json.dumps({"rows": {"A": {"min_canonical": 2}}}))
+    complete = tmp_path / "complete"
+    run = _run(base, complete, "--offline")
+    assert run.exit_code == 0, (run.output, run.exception)
+    previous = complete / "analysis"
+    scoring = _json(previous / "run_summary.json")
+    assert scoring["weighting"]["policy"] == "component"
+    assert scoring["weighting"]["component"] == "B"
+    replay = _json(previous / "analysis_replay.json")["arguments"]
+    assert all(".triplet-in-progress" not in value for value in replay)
+    monkeypatch.chdir(previous)
+    repeat = tmp_path / "replay"
+    result = CliRunner().invoke(app, [*replay, "--out", str(repeat)])
+    assert result.exit_code == 0, (result.output, result.exception)
+    for name in ("qc_rows.tsv", "weights.tsv", "site_weight_support.tsv", "dca_ab.tsv"):
+        assert (repeat / name).read_bytes() == (previous / name).read_bytes()

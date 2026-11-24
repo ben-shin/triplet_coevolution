@@ -7,14 +7,27 @@ import math
 import shutil
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
+from dataclasses import replace
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from triplet_coevolution import __version__
-from triplet_coevolution.core.coordinates import build_reference_map, subset_reference_map
+from triplet_coevolution.analysis_plan import (
+    AnalysisBudgetError,
+    QCBlocked,
+    estimate_model,
+    input_cells,
+    match_metadata,
+    publish_plan,
+    replay_arguments,
+    write_weighted_sites,
+    write_weights,
+)
+from triplet_coevolution.core.coordinates import build_reference_map
 from triplet_coevolution.family_workflow import evidence
 from triplet_coevolution.inference.mi import triplet_mi
 from triplet_coevolution.inference.scores import get_score, mi_with_apc_policy, pair_coverage
@@ -22,15 +35,13 @@ from triplet_coevolution.inference.weights import sequence_weights
 from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.export import write_triplet_mi_tables
 from triplet_coevolution.io.metadata import read_triplet_table
-from triplet_coevolution.msa.masking import apply_triplet_masks
-from triplet_coevolution.msa.qc import triplet_qc
-from triplet_coevolution.msa.support import MissingRowSupport, retained_sites, site_masks
+from triplet_coevolution.msa.support import site_masks
 from triplet_coevolution.msa.synchronize import synchronize
 from triplet_coevolution.provenance import file_hashes
 from triplet_coevolution.reporting.html import write_report
 from triplet_coevolution.reporting.network import ranked_tables, write_network
 from triplet_coevolution.score_commands import benchmark, export, report
-from triplet_coevolution.score_views import save_analysis_store
+from triplet_coevolution.score_views import save_analysis_store, write_json
 from triplet_coevolution.structure.workflow import structure_map
 from triplet_coevolution.workflow import prepare, run
 
@@ -102,8 +113,15 @@ def _stage_run(out: Path) -> Iterator[Path]:
             yield stage
             with ExitStack() as rollback:
                 # Directories come before their contents. The manifest marks a completed run.
-                marker_names = ("structure_summary.json", "workflow_summary.json", SUMMARY_NAME, "view_summary.json",
-                                "benchmark.json", "score_manifest.json")
+                marker_names = (
+                    "structure_summary.json",
+                    "workflow_summary.json",
+                    SUMMARY_NAME,
+                    "view_summary.json",
+                    "benchmark.json",
+                    "score_manifest.json",
+                    "plan.json",
+                )
                 final_manifest = next((stage / name for name in marker_names if (stage / name).exists()), None)
                 artifacts = sorted(
                     stage.rglob("*"), key=lambda p: (p == final_manifest, p.name in marker_names, p)
@@ -335,10 +353,88 @@ def analyze(
             help="Top-K contact-retrieval cutoffs. Repeat for multiple cutoffs.",
         ),
     ] = None,
-) -> None:
+    qc_policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--qc-policy", help="Versioned JSON row/site filtering and diagnostics policy."
+        ),
+    ] = None,
+    weight_policy: Annotated[
+        str,
+        typer.Option(
+            "--weight-policy",
+            help="equal_component, component, concatenated, cluster_representatives, clade_balanced, or supplied.",
+        ),
+    ] = "equal_component",
+    weight_component: Annotated[
+        str | None,
+        typer.Option("--weight-component", help="Component A, B or C for component weighting."),
+    ] = None,
+    clade_column: Annotated[
+        str | None,
+        typer.Option(
+            "--clade-column", help="Match-table clade field for clade-balanced weights or metadata."
+        ),
+    ] = None,
+    weight_column: Annotated[
+        str | None,
+        typer.Option(
+            "--weight-column", help="Match-table field with nonnegative absolute supplied weights."
+        ),
+    ] = None,
+    min_valid_weight: Annotated[
+        float,
+        typer.Option(
+            "--min-valid-weight",
+            help="Minimum positive canonical weight at a scored pair/triple, inclusive.",
+        ),
+    ] = 0.0,
+    memory_mib: Annotated[
+        float | None,
+        typer.Option(
+            "--memory-mib",
+            help="Numeric-workspace budget in MiB, including score kernels; estimates exclude process overhead.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Inspect inputs, QC and allocation estimates without fitting or permuting.",
+        ),
+    ] = False,
+) -> dict | None:
     """Score curated alignments, benchmark associations and write a local HTML report."""
+    options = locals().copy()
     try:
+        from triplet_coevolution.msa.diagnostics import QCPolicy, inspect_qc, write_qc
+
         started = datetime.now(UTC)
+        if not math.isfinite(min_valid_weight) or min_valid_weight < 0:
+            raise ValueError("--min-valid-weight must be finite and nonnegative")
+        if memory_mib is not None and (not math.isfinite(memory_mib) or memory_mib <= 0):
+            raise ValueError("--memory-mib must be finite and positive")
+        budget = None
+        if memory_mib is not None:
+            numerator, denominator = memory_mib.as_integer_ratio()
+            budget = numerator * 1024**2 // denominator
+        if weight_policy not in {
+            "equal_component",
+            "component",
+            "concatenated",
+            "cluster_representatives",
+            "clade_balanced",
+            "supplied",
+        }:
+            raise ValueError("unknown weight policy")
+        if (weight_policy == "component") != (weight_component is not None) or (
+            weight_component is not None and weight_component not in ("A", "B", "C")
+        ):
+            raise ValueError("component weighting requires --weight-component A, B or C")
+        if (weight_policy == "supplied") != (weight_column is not None):
+            raise ValueError("supplied weighting requires --weight-column")
+        if weight_policy == "clade_balanced" and clade_column is None:
+            raise ValueError("clade_balanced weighting requires --clade-column")
         if legacy and (
             dca_score not in (None, "dca_frobenius")
             or threebody_score not in (None, "threebody_rms")
@@ -398,7 +494,7 @@ def analyze(
         out = out.expanduser()
         _check_output(out)
 
-        if plots:
+        if plots and not dry_run:
             try:
                 from triplet_coevolution.reporting.plots import save_dca_plot, save_mi_plots
             except ModuleNotFoundError as exc:
@@ -413,25 +509,39 @@ def analyze(
             key: path.expanduser()
             for key, path in zip(("A", "B", "C", "matches"), (a, b, c, matches))
         }
-        for key, path in (("triplet_candidates", triplet_candidates), ("contacts", contacts),
-                          ("site_panel", site_panel)):
+        for key, path in (
+            ("triplet_candidates", triplet_candidates),
+            ("contacts", contacts),
+            ("site_panel", site_panel),
+            ("qc_policy", qc_policy),
+        ):
             if path is not None:
                 paths[key] = path.expanduser()
         stamps = {key: _file_stamp(path) for key, path in paths.items()}
         inputs = {key: _input_identity(path) for key, path in paths.items()}
+        if budget is not None:
+            cells = input_cells(paths)
+            if sum(cells.values()) > budget:
+                why = f"Source alignments contain {sum(cells.values())} sequence symbols and exceed the numeric-workspace budget of {budget} bytes before encoding. Use a preselected input panel."
+                if dry_run:
+                    publish_plan(
+                        out,
+                        {
+                            "schema_version": 1,
+                            "status": "blocked",
+                            "blockers": [{"method": "inputs", "reason": why}],
+                            "source_symbols": cells,
+                        },
+                        inputs,
+                    )
+                    typer.echo(f"Blocked: {why} See {out / 'plan.json'}", err=True)
+                    raise typer.Exit(3)
+                raise AnalysisBudgetError(why)
         original = tuple(
             read_msa(paths[name], name, molecule)
             for name, molecule in zip(("A", "B", "C"), (a_type, b_type, c_type))
         )
         table = read_triplet_table(paths["matches"])
-        panel_masks = site_masks(paths["site_panel"], original) if site_panel is not None else None
-        strata = None
-        if strata_column is not None:
-            if strata_column not in table.extra_columns:
-                raise ValueError(f"unknown permutation stratum column in match table: {strata_column}")
-            strata = tuple(row[strata_column] for row in table.annotations)
-            if not all(strata):
-                raise ValueError(f"empty permutation group in match table column {strata_column}")
         for key, path in paths.items():
             if _file_stamp(path) != stamps[key]:
                 raise ValueError(
@@ -447,31 +557,208 @@ def analyze(
             )
         )
         matched = synchronize(*original, table)
-        qc = triplet_qc(matched)
+        widths = [c.n_sites for c in matched.components]
+        # Encoded alignments, canonical masks, per-column histograms and cumulative gap runs.
+        qc_bytes = matched.n_observations * (4 * sum(widths) + 32 * max(widths)) + 20 * 32 * sum(
+            widths
+        )
+        if budget is not None and qc_bytes > budget:
+            why = f"QC array workspace estimate of {qc_bytes} bytes exceeds the --memory-mib budget. Use a smaller input panel."
+            if dry_run:
+                publish_plan(
+                    out,
+                    {
+                        "schema_version": 1,
+                        "status": "blocked",
+                        "blockers": [{"method": "qc", "reason": why}],
+                        "input_rows": matched.n_observations,
+                        "input_widths": widths,
+                        "qc_workspace_bytes": qc_bytes,
+                    },
+                    inputs,
+                )
+                typer.echo(f"Blocked: {why} See {out / 'plan.json'}", err=True)
+                raise typer.Exit(3)
+            raise AnalysisBudgetError(why)
         mask_options = {
             "min_coverage": min_coverage,
             "max_gap_fraction": max_gap_fraction,
             "max_missing_fraction": max_missing_fraction,
         }
-        keep = retained_sites(qc, mask_options, panel_masks)
-        for part, mask in zip(qc.components, keep):
-            if not mask.any():
-                raise MissingRowSupport(
-                    f"QC removed every column in component {part.name}. Check the masking thresholds."
-                )
-
-        filtered = apply_triplet_masks(matched, *keep)
-        maps = tuple(
-            subset_reference_map(mapping, cols)
-            for mapping, cols in zip(
-                maps, (filtered.a_columns, filtered.b_columns, filtered.c_columns)
-            )
+        panel_masks = (
+            site_masks(paths["site_panel"], original, maps) if site_panel is not None else None
         )
+        policy = QCPolicy.from_config(paths.get("qc_policy"))
+        if clade_column and policy.clade_column is None:
+            policy = replace(policy, clade_column=clade_column)
+        audit = inspect_qc(
+            matched,
+            maps,
+            table,
+            column_options=mask_options,
+            panel_masks=panel_masks,
+            policy=policy,
+        )
+        if audit.blockers:
+            if dry_run:
+                publish_plan(
+                    out,
+                    {
+                        "schema_version": 1,
+                        "status": "blocked",
+                        "blockers": [{"method": "qc", "reason": v} for v in audit.blockers],
+                    },
+                    inputs,
+                    audit,
+                )
+                typer.echo(f"QC blocked: {out / 'plan.json'}", err=True)
+                raise typer.Exit(3)
+            raise QCBlocked(audit, inputs)
+        filtered = audit.filtered
+        maps = audit.maps
+        qc = audit.qc
+        clades = match_metadata(table, audit.row_indices, clade_column)
+        supplied = match_metadata(table, audit.row_indices, weight_column, numeric=True)
+        if weight_policy == "clade_balanced" and permutations and strata_column is None:
+            strata_column = clade_column
+        groups = match_metadata(table, audit.row_indices, strata_column)
+        strata = tuple(groups.values()) if groups is not None else None
+        if weight_policy == "clade_balanced" and permutations:
+            group_clades = {}
+            for key, g in groups.items():
+                if g in group_clades and group_clades[g] != clades[key]:
+                    raise ValueError("permutation strata must be nested within weighting clades")
+                group_clades[g] = clades[key]
+        plan = estimate_model(
+            filtered.msa,
+            maps,
+            dca=dca,
+            threebody=threebody,
+            threebody_model=threebody_model,
+            require_reference=require_reference,
+            max_triplets=max_triplets,
+            triplet_candidates=paths.get("triplet_candidates"),
+            permutations=permutations,
+            min_valid=min_valid,
+            min_valid_weight=min_valid_weight,
+            all_pairs=all_pairs,
+            max_pairs=max_pairs,
+            weight_policy=weight_policy,
+            weight_component=weight_component,
+            supplied_weights=supplied,
+            memory_budget_bytes=budget,
+            seed=seed,
+            identity_threshold=identity_threshold,
+            min_overlap=min_overlap,
+        )
+        plan["inputs"] = {k: {"sha256": v["sha256"]} for k, v in inputs.items()}
+        plan["input_alignments"] = {
+            m.name: {
+                "rows": m.n_sequences,
+                "columns": m.n_sites,
+                "bytes": paths[m.name].stat().st_size,
+                "reference_id": axis.reference_id,
+            }
+            for m, axis in zip(original, maps, strict=True)
+        }
+        plan["settings"] = {
+            "dca": dca,
+            "threebody": threebody,
+            "threebody_model": threebody_model if threebody else None,
+            "ridge": ridge if dca else None,
+            "pseudocount": pseudocount if threebody and threebody_model == "local" else None,
+            "global_l2": global_l2 if threebody and threebody_model == "global" else None,
+            "require_reference": require_reference,
+            "max_pairs": None if all_pairs else max_pairs,
+            "max_triplets": max_triplets if threebody else None,
+            "apc_universe": apc_universe,
+            "mi_score": score,
+            "dca_score": dca_score if dca else None,
+            "threebody_score": threebody_score if threebody else None,
+            "seed": seed,
+            "legacy": legacy,
+        }
+        plan["output_directory"] = "."
+        plan["estimates"]["qc_workspace_bytes"] = qc_bytes
+        plan["estimates"]["numeric_workspace_bytes"] = max(
+            plan["estimates"]["numeric_workspace_bytes"], qc_bytes
+        )
+        plan["contact_labels"] = None
+        if contacts is not None:
+            if legacy:
+                from triplet_coevolution.validation.structure import read_contacts
+
+                plan["contact_labels"] = len(read_contacts(paths["contacts"], maps))
+            else:
+                from triplet_coevolution.validation.benchmark import read_label_table
+
+                plan["contact_labels"] = len(
+                    read_label_table(paths["contacts"], {m.component: m.reference_id for m in maps})
+                )
+        if permutations:
+            from triplet_coevolution.validation.phylogeny import exchangeability_groups
+
+            try:
+                exchange = exchangeability_groups(filtered.msa.n_observations, strata)
+                plan["exchangeability"] = {
+                    "column": strata_column,
+                    "groups": len(exchange),
+                    "movable_observations": sum(len(g) for g in exchange if len(g) > 1),
+                }
+            except ValueError as exc:
+                plan["blockers"].append({"method": "permutations", "reason": str(exc)})
+                plan["status"] = "blocked"
+        for key, path in paths.items():
+            if _file_stamp(path) != stamps[key]:
+                raise ValueError(f"input changed while planning: {path}")
+        plan["qc"] = {
+            "input_observations": matched.n_observations,
+            "retained_observations": filtered.msa.n_observations,
+        }
+        if dry_run:
+            publish_plan(out, plan, inputs, audit)
+            typer.echo(f"{plan['status']}: {out / 'plan.json'}")
+            if plan["blockers"]:
+                raise typer.Exit(3)
+            return plan
+        if plan["blockers"]:
+            issue = plan["blockers"][0]
+            if issue["method"] == "permutations":
+                raise ValueError(issue["reason"])
+            if issue["method"] in {"dca", "threebody"}:
+                from triplet_coevolution.inference.advanced import ModelFitError
+
+                raise ModelFitError(issue["method"], issue["reason"])
+            raise AnalysisBudgetError(issue["reason"])
         weighting_options = {"identity_threshold": identity_threshold, "min_overlap": min_overlap}
-        weights = sequence_weights(filtered.msa, **weighting_options)
+        weight_settings = {
+            "weight_policy": weight_policy,
+            "weight_component": weight_component,
+            "clade_column": clade_column,
+            "weight_column": weight_column,
+            "min_valid_weight": min_valid_weight,
+            "memory_mib": memory_mib,
+        }
+        weights = sequence_weights(
+            filtered.msa,
+            **weighting_options,
+            policy=weight_policy,
+            component=weight_component,
+            clades=clades if weight_policy == "clade_balanced" else None,
+            supplied_weights=supplied,
+            memory_budget_bytes=budget,
+        )
         mi_kernel = "v1_scalar" if legacy else "batched"
         result = mi_with_apc_policy(
-            triplet_mi(filtered.msa, weights=weights, min_valid=min_valid, kernel=mi_kernel), maps, apc_universe
+            triplet_mi(
+                filtered.msa,
+                weights=weights,
+                min_valid=min_valid,
+                min_valid_weight=min_valid_weight,
+                kernel=mi_kernel,
+            ),
+            maps,
+            apc_universe,
         )
         table_options = {
             "score": score,
@@ -479,8 +766,15 @@ def analyze(
             "min_valid": min_valid,
             "require_reference": require_reference,
             "fmt": fmt,
+            **({"min_valid_weight": min_valid_weight} if min_valid_weight else {}),
         }
         with _stage_run(out) as stage:
+            write_json(stage / "analysis_replay.json", replay_arguments(options, out))
+            qc_files = write_qc(stage, audit)
+            write_weights(stage / "weights.tsv", weights)
+            write_weighted_sites(stage / "site_weight_support.tsv", matched, audit, weights)
+            qc_files["weighted_sites"] = "site_weight_support.tsv"
+            write_json(stage / "plan.json", plan)
             tables = write_triplet_mi_tables(stage, result, *maps, **table_options)
             advanced = {}
             observed_dca = {}
@@ -536,10 +830,24 @@ def analyze(
                     )
                 },
                 "settings": {**mask_options, **weighting_options, **table_options, "plots": plots},
-                "matched_observations": matched.n_observations,
+                "matched_observations": filtered.msa.n_observations,
+                "input_observations": matched.n_observations,
+                "weighting": {
+                    **weights.summary(),
+                    **weight_settings,
+                    "kish_effective_count": weights.kish,
+                    "sum_weights": weights.n_eff,
+                    "weight_per_retained_site": weights.n_eff / sum(m.n_sites for m in maps),
+                },
+                "qc_diagnostics": audit.summary,
+                "analysis_plan": "plan.json",
                 "effective_depth": weights.n_eff,
                 "advanced": advanced,
                 "outputs": {
+                    "diagnostics": qc_files,
+                    "weights": "weights.tsv",
+                    "plan": "plan.json",
+                    "replay": "analysis_replay.json",
                     "tables": {
                         name.upper(): {"path": path.name, "rows": _row_count(path, fmt)}
                         for name, path in tables.items()
@@ -580,6 +888,7 @@ def analyze(
                         score,
                         require_reference=require_reference,
                         min_valid=min_valid,
+                        min_valid_weight=min_valid_weight,
                         max_pairs=table_options["max_pairs"],
                         apc_universe=apc_universe,
                     )
@@ -596,7 +905,7 @@ def analyze(
                 maps,
                 result,
                 observed_dca,
-                observation_ids=[row.observation_id for row in matched.matches],
+                observation_ids=[row.observation_id for row in filtered.msa.matches],
                 labels=paths.get("contacts"),
                 bootstrap=benchmark_bootstrap,
                 seed=seed,
@@ -630,7 +939,7 @@ def analyze(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    typer.echo(f"matched obs: {matched.n_observations}")
+    typer.echo(f"matched obs: {filtered.msa.n_observations}")
     typer.echo(f"effective depth: {weights.n_eff:.2f}")
     typer.echo("kept cols: " + " ".join(f"{m.component}={m.n_sites}" for m in maps))
     for name, path in tables.items():
@@ -639,6 +948,18 @@ def analyze(
         typer.echo(f"plots: {out / 'figures'}")
     typer.echo(f"report: {out / 'report.html'}")
     typer.echo(f"summary: {out / SUMMARY_NAME}")
+
+
+@wraps(analyze)
+def plan(*args, **kwargs):
+    kwargs["dry_run"] = True
+    return analyze(*args, **kwargs)
+
+
+app.command(
+    "plan",
+    help="Validate native analysis inputs and inspect QC and allocation estimates without fitting.",
+)(plan)
 
 
 if __name__ == "__main__":

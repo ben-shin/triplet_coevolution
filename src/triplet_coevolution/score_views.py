@@ -83,6 +83,11 @@ def save_analysis_store(
             if key not in ("triplet_candidates", "contacts")
         },
         "observation_ids": observation_ids,
+        "weighting": summary.get("weighting", {}),
+        "qc": summary.get("qc_diagnostics", {}),
+        "weight_table_sha256": file_digest(directory / "weights.tsv")
+        if (directory / "weights.tsv").is_file()
+        else None,
     }
     store = from_results(
         maps,
@@ -171,6 +176,7 @@ def write_ranked_views(
                 "score": score,
                 "max_pairs": max_pairs,
                 "min_valid": store.min_valid,
+                "min_valid_weight": store.min_valid_weight,
                 "require_reference": store.require_reference,
             }
             if method == "MI":
@@ -233,7 +239,7 @@ def render_score_view(
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Archived pair scores</title>
 <style>{STYLE}</style></head><body><header><h1>Archived pair scores</h1></header><main>
 <section><h2>Score universe</h2><ul>{"".join(reference_rows)}</ul>
-<p>Ranked views use the stored coordinates, minimum support of {store.min_valid}, and
+<p>Ranked views use the stored coordinates, minimum support of {store.min_valid} observations and {store.min_valid_weight:g} weight, and
 {escape(store.provenance.get("apc_universe", "retained"))} APC axes. Display limits apply separately to each interface.</p></section>
 <section><h2>Pair rankings</h2>{_rankings(directory, tables)}{"".join(pictures)}</section>
 {benchmark_section(overview)}<section><h2>Files</h2><ul>{pages}</ul></section></main></body></html>"""
@@ -268,6 +274,8 @@ def regenerate_report(source: Path, directory: Path) -> None:
     paths += [v["path"] for v in summary.get("advanced", {}).get("outputs", {}).values()]
     paths += [output["network"]["path"], *output["figures"].values()]
     paths += [output[k] for k in ("score_manifest", "score_payload", "benchmark") if k in output]
+    paths += [output[k] for k in ("weights", "plan", "replay") if k in output]
+    paths += list(output.get("diagnostics", {}).values())
     if any(path not in expected or path == "report.html" for path in paths):
         raise ValueError("report file was not present in the verified native inventory")
     write_report(directory, summary, ranked_tables(summary))

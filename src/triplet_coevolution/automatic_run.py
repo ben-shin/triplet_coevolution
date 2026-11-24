@@ -13,6 +13,7 @@ from uuid import uuid4
 import typer
 
 from triplet_coevolution import __version__
+from triplet_coevolution.analysis_plan import AnalysisBudgetError, QCBlocked, publish_plan
 from triplet_coevolution.inference.advanced import ModelFitError
 from triplet_coevolution.msa.support import MissingRowSupport
 from triplet_coevolution.reporting.automatic import write_workflow_report
@@ -103,6 +104,25 @@ def _score(stage, out, summary, kwargs, settings, plan):
             break
         except typer.Exit as exc:
             cause = exc.__cause__
+            if isinstance(cause, AnalysisBudgetError):
+                _terminal(summary, "resource_limit", str(cause))
+                return
+            if isinstance(cause, QCBlocked) and effective.get("qc_policy"):
+                # The analyzed QC policy already determined the scientific exclusions.
+                publish_plan(
+                    stage / "qc_plan",
+                    {
+                        "schema_version": 1,
+                        "status": "blocked",
+                        "blockers": [{"method": "qc", "reason": v} for v in cause.audit.blockers],
+                    },
+                    cause.inputs,
+                    cause.audit,
+                )
+                summary["qc_plan"] = "qc_plan/plan.json"
+                summary["analyze_args"] = None
+                _terminal(summary, "insufficient_data", str(cause))
+                return
             if isinstance(cause, ModelFitError) and settings.get(cause.method):
                 method = cause.method
                 plan["skipped"][method] = str(cause)
@@ -162,6 +182,9 @@ def _score(stage, out, summary, kwargs, settings, plan):
         "observations": analysis["matched_observations"],
         "retained_columns": {n: c["retained_sites"] for n, c in analysis["components"].items()},
     }
+    if analysis.get("qc_diagnostics", {}).get("excluded_observations"):
+        summary["scored_scope"]["selection"] = "configured_qc"
+        summary["scored_scope"]["qc_summary"] = "analysis/qc_summary.json"
     if not any(t["rows"] for t in analysis["outputs"]["tables"].values()):
         _terminal(summary, "insufficient_data", "No pair passed the configured output thresholds.")
     elif "observation_qc" in summary:

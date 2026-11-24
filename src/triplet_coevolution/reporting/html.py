@@ -306,6 +306,9 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
         ("Effective depth", f'{summary["effective_depth"]:.2f}'),
         ("Retained columns", " / ".join(str(c["retained_sites"]) for c in components.values())),
     ]
+    support = summary.get("weighting")
+    if support is not None:
+        metrics.append(("Kish effective count", f"{support['kish_effective_count']:.2f}"))
     metrics_html = "".join(f"<div><dt>{k}</dt><dd>{_text(v)}</dd></div>" for k, v in metrics)
     qc = _table(["Component", "Type", "Reference", "Input sequences", "Retained / original",
                  "Canonical", "Gaps", "Missing"], (
@@ -330,7 +333,28 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
     files.extend(info["path"] for info in advanced.get("outputs", {}).values())
     files.extend([outputs["network"]["path"], "run_summary.json", *outputs["figures"].values()])
     files.extend(outputs[key] for key in ("score_manifest", "score_payload", "benchmark") if key in outputs)
+    files.extend(outputs[k] for k in ("weights", "plan", "replay") if k in outputs)
+    files.extend(outputs.get("diagnostics", {}).values())
     links = "".join(f"<li>{_link(p, p)}</li>" for p in dict.fromkeys(files))
+    audit_block = ""
+    if support and "qc_diagnostics" in summary:
+        audit = summary["qc_diagnostics"]
+        audit_block = (
+            f"<p>QC retained {audit['retained_observations']:,} of {audit['input_observations']:,} matched observations. "
+            f"Weighting policy <strong>{_text(support['policy'])}</strong>. "
+            f"Sum of weights per retained site {support['weight_per_retained_site']:.3g}. "
+            f"Valid-pair thresholds are {summary['settings']['min_valid']} observations and {support['min_valid_weight']:g} weight. "
+            "The sum of weights and Kish count describe different aspects of redundancy. Neither establishes independent evolutionary sample size.</p>"
+            + "<p>"
+            + _link(outputs["diagnostics"]["rows"], "Observation audit")
+            + " · "
+            + _link(outputs["diagnostics"]["sites"], "Site audit")
+            + " · "
+            + _link(outputs["weights"], "Weights and neighbor counts")
+            + " · "
+            + _link(outputs["plan"], "Resource estimates")
+            + "</p>"
+        )
     picture = ""
     if combined := outputs["figures"].get("triplet"):
         payload = base64.b64encode((directory / combined).read_bytes()).decode("ascii")
@@ -364,13 +388,13 @@ def write_report(directory: Path, summary: dict, tables: list[RankedTable], *,
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light"><title>Triplet coevolution analysis</title><style>{STYLE}</style></head>
 <body><header><h1>Triplet coevolution</h1><p>Associations across three matched sequence alignments</p></header>
-<nav aria-label="Sections">{'<a href="#workflow">Search &amp; matching</a>' if workflow_section else ''}
+<nav aria-label="Sections">{'<a href="#workflow">Search &amp; matching</a>' if workflow_section else ""}
 <a href="#quality">Quality control</a><a href="#scores">Site rankings</a>
 <a href="#benchmarks">Benchmarks</a><a href="#files">Files &amp; settings</a></nav>
 <main>{workflow_section}<section id="quality"><h2>Alignment quality</h2><dl class="metrics">{metrics_html}</dl>
 {qc}<div class="composition" aria-hidden="true">{"".join(strips)}<div class="legend">{legend}</div></div>
-<p class="small">Coverage, gaps and missing symbols are averaged over matched rows before filtering.
-Effective depth is the sum of redundancy weights. Reference positions and original alignment columns start at 1.</p></section>
+<p class="small">Coverage, gaps and missing symbols are averaged across retained observations before site filtering.
+Effective depth is the sum of observation weights. Reference positions and original alignment columns start at 1.</p>{audit_block}</section>
 <section id="scores"><h2>Site rankings</h2><p>Up to five leading results per ranking.
 Shared ancestry, limited depth and indirect associations can influence every score.</p>
 {_rankings(directory, tables)}{coverage}{picture}</section>

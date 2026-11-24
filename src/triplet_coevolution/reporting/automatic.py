@@ -110,6 +110,7 @@ def write_workflow_report(directory, summary):
     keys = {
         "evidence": "All candidate evidence",
         "group_audit": "Group decisions",
+        "qc_plan": "Blocked analysis plan and QC diagnostics",
         "selected_evidence": "Selected evidence",
         "matches": "Synchronized matches",
         "reference_coordinates": "Reference coordinates",

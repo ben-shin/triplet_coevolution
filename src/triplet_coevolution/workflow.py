@@ -188,9 +188,14 @@ def _write_analysis_args(prepared, kwargs, filename="analyze_args.json"):
     args = ["analyze"]
     for key, value in kwargs.items():
         option = "--" + key.replace("_", "-")
+        if value is None:
+            continue
         if isinstance(value, bool):
             if value:
                 args.append(option)
+        elif isinstance(value, list):
+            for item in value:
+                args.extend([option, str(item)])
         else:
             arg = str(value)
             if isinstance(value, Path) and value.absolute().is_relative_to(prepared.absolute()):

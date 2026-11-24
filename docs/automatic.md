@@ -39,6 +39,8 @@ For the bounded fit, the scheduler targets 8–128 matched observations and sele
 
 The automatic DCA budget requires at most 80,000 pair cells, three million depth-by-feature cells and a solver dimension up to 512. The feature estimate uses the smaller of depth and alphabet size per original column. Nineteen permutations require `P ≤ 12,000`, `N × P ≤ 800,000` and `N² × W ≤ 10 million`. Five permutations run for panels with `P ≤ 80,000`, `N × P ≤ 4 million` and `N² × W ≤ 80 million`. Larger panels skip null refits. To preconfigure a method, seed, candidate set, draw count, plots or contact benchmark, set the corresponding field in the project's `analysis` object. Explicit choices override automatic scheduling within the overall limits and the model's own solver limits. See the [methods guide](methods.md) for interpretation and parameter details.
 
+An explicit `analysis.qc_policy` in project.json controls the order and repetition of row/site filtering. If the requested policy leaves no usable panel, the run publishes `qc_plan/plan.json` and the row and site audit alongside the complete matching evidence and exits 3. Scored analyses record their final weights and exact inputs in the analysis directory. [Planning and weighting](analysis-planning.md)
+
 ## Batch results
 
 | Exit | Status in `workflow_summary.json` | Meaning |

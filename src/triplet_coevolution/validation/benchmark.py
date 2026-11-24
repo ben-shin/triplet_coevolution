@@ -26,7 +26,11 @@ class Label:
 
 def read_benchmark_labels(path: Path, store: ScoreStore) -> dict:
     """Read binary or unknown labels. Repeated coordinate pairs must be adjudicated upstream."""
-    references = {m.component: m.reference_id for m in store.maps}
+    return read_label_table(path, {m.component: m.reference_id for m in store.maps})
+
+
+def read_label_table(path: Path, references: dict[str, str]) -> dict:
+    """Parse labels against declared physical reference IDs before scores exist."""
     required = {
         f"{s}_{k}" for s in "xy" for k in ("component", "reference_id", "reference_pos")
     } | {"contact"}
