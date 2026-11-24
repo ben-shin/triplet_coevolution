@@ -118,3 +118,5 @@ Reproduce the synthetic check from the repository root with the following comman
 python -m pytest -q tests/test_structure_parser.py tests/test_structure_mapping_distances.py tests/test_structure_command.py
 triplet structure-map --config examples/structure/config.json --out results/structure-example
 ```
+
+**RNA spelling regression.** The final Phase 2 implementation is `b08f7e91d338699d32022751e48b97f3caff6aee`. Its score-to-structure join uses the alignment's molecule-aware T/U comparison and preserves the supplied reference symbol in published coordinates. Independent checks with a gapped FASTA and reverse reference numbering produced identical geometries, labels, scores, ranks and benchmark metrics for the T- and U-spelled RNA across all 48 pairs. An actual U/G substitution at reference C103 was rejected before publication. A protein T/U substitution was also rejected. The rebuilt Windows wheel passed 802 tests and skipped the same 11 in 40.49 s. Its installed example ran from outside the source checkout.
