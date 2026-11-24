@@ -233,3 +233,17 @@ The integrated 1.3.0.dev0 candidate is `04c7d835baed2beef32d3d0fbaea05836f0cfe89
 | Failure and replay checks | Terminal input/hash errors roll back original destinations. Config inheritance preserves declaring-directory paths and original file digests. A Windows 3.11 small-artifact run exposed a final verification callback suppressed when the clock had yet to tick. A fixed-clock test now requires that event, and actual interrupted-checkpoint recovery passed on the refreshed minimum installation. |
 
 The release workflow has no publication job. Software licensing, confirmed citation metadata, third-party redistribution authorization and public release remain owner decisions. The prospective independent-cohort study has its own scientific gate.
+
+## Phase 11 — frozen, independent experimental evaluation
+
+The accepted Phase 10 source was `04c7d83`, with its verification recorded at `9b91883`. The separate outcome-blind supplement at `0c09b90` preceded the published-assay analysis (`731d5af`), clade-held-out conditional evaluation (`c779245`) and experimental structure evaluation (`a5cca0c`). The same registration governs all three. The compact records and replay guides ship with the development distribution. Canonical text hashes refer to LF bytes.
+
+| Tracked evidence under `benchmarks/` | SHA-256 | Independent check |
+| --- | --- | --- |
+| `independent_evaluation_policy.json` | `5e415125959c925e8408994e638220eb9a559d6a0ded3c69a8336780a85186d3` | Outcome-blind revision, fixed structures, masks, fold/penalty rules, controls and functional assay. |
+| `independent_contact_metrics.tsv` | `15330cfe67f8b68041615bdd1e9627650c6a7cffb93bc6def12ac1010ad663cb` | 96 primary rows. All 24 pooled AUROCs matched an ascending-midrank calculation. |
+| `independent_contact_metrics.json.gz` | `808ef24b0cd06f3a915f7a64a5bceeb9e3893076bac1188dded216a333b72ed2` | 5,625 sampled distances were checked directly in the original deposits, including 1,261 unobservable pairs. Four cutoffs, weighting schemes and structural copies retain distinct denominators. |
+| `independent_nested_metrics.json` | `e65a4e4e630dbd6b1f1a727cd80e976ca8a0c5092829f8a513464e9c9c65d3f6` | Two independent executions produced identical bytes. Direct energy enumeration agreed with all 62 primary model/fold losses within 4.45 × 10⁻¹⁶ nats/site. Held-out-only perturbation left the training model identities invariant. |
+| `experimental_fluorescence_results.json` | `671d04f541b091240fa8df95f23c30c37b190d184dbf6a2d702caed4f0f72d81` | Both original 8,192-row trial tables were tested against independent normal-equation and Walsh calculations. The repeated experimental run reproduced the aggregate. |
+
+The final release checks verify that the packaged policy, compact outcomes, scripts, reports and five examples are installed. The biological replay commands, dependencies and all positive, negative and missing outcomes appear with their studies. The local distribution receipt records the exact built wheel and source archive hashes. [Experimental contact replay](independent-contact-results.md) · [Nested model replay](independent-heldout.md) · [Assay replay](fluorescence-benchmark.md) · [Implementation report](implementation-report.md)

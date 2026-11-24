@@ -8,3 +8,8 @@ benchmarks/independent_cohort_protocol.json text eol=lf
 benchmarks/independent_cohort_freeze.json text eol=lf
 benchmarks/experimental_structure_metrics.tsv text eol=lf
 benchmarks/experimental_tree_metrics.json -text
+benchmarks/independent_evaluation_policy.json text eol=lf
+benchmarks/independent_*_metrics.json text eol=lf
+benchmarks/independent_*_metrics.tsv text eol=lf
+benchmarks/independent_contact_metrics.json.gz binary
+benchmarks/experimental_fluorescence_results.json text eol=lf

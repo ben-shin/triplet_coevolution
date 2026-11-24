@@ -1,6 +1,6 @@
 # GatABC structural replication and marker-tree benchmark
 
-On two separately deposited transamidosomes, APC-corrected DCA achieved the highest interface-macro average precision of the four frozen rankings. Absolute average precision was 0.039–0.044. The same 888-observation alignment and its original pair scores were used in each evaluation. The structures vary the experimental labels and species. An independent sequence system remains a separate test. [Registered protocol](experimental-benchmark-protocol.md) · [Thermotoga 3AL0](https://www.rcsb.org/structure/3AL0) · [Thermus 3KFU](https://www.rcsb.org/structure/3KFU)
+On two separately deposited transamidosomes, APC-corrected DCA achieved the highest interface-macro average precision of the four frozen rankings. Absolute average precision was 0.039–0.044. The same 888-observation alignment and its original pair scores were used in each evaluation. The structures vary the experimental labels and species. Independent sequence systems were evaluated separately in the [polymerase and ribosome study](independent-contact-results.md). [Registered protocol](experimental-benchmark-protocol.md) · [Thermotoga 3AL0](https://www.rcsb.org/structure/3AL0) · [Thermus 3KFU](https://www.rcsb.org/structure/3KFU)
 
 ## Experimental contacts
 

@@ -1,0 +1,33 @@
+# Research platform and experimental results
+
+Triplet Coevolution now takes three matched or unpaired molecular families through auditable pairing, scoring, calibration, structural benchmarking and offline exploration. The biological tests found modest pair-contact recovery and no clear held-out advantage for inter-component triple terms on the two tested panels. A separate fluorescence assay did show a repeatable predictive gain from within-protein third-order terms. [Requirement-by-requirement audit](completion-audit.md) · [Phase ledger](implementation-ledger.md)
+
+## Experimental findings
+
+| Question | Measurement | Interpretation |
+| --- | --- | --- |
+| Do ranked sequence pairs recover experimental contacts? | An independent bacterial RNA polymerase cohort contained 461 assemblies, and a 5S RNA/uL5/uL18 cohort contained 163. At an 8 Å heavy-atom cutoff, pooled APC-corrected mean-field DCA AUROC was 0.608 and 0.610 on the two 4YG2 polymerase copies, and 0.533 on 4YBB. In the top 50, known contacts numbered 1, 0 and 1, with 5, 10 and 0 unknowns. | Physical positives were rare. Average precision was 0.183%, 0.178% and 0.825%, against prevalences of 0.119%, 0.119% and 0.706%. Changing the copy, interface or taxonomic weighting changed recovery. The ribosomal protein–protein interface had zero observed positives at 8 Å and undefined AUROC/AP. [Scores, controls and denominators](independent-contact-results.md) |
+| Does adding ABC terms improve prediction outside the training clades? | Pair-only and pair-plus-K models used the same six registered positions, 15 pair terms and complete rows. Mean paired gain in nats/site was +0.00019 across 22 held-out polymerase phyla (95% interval −0.01036 to +0.00985) and +0.00600 across nine ribosome phyla (−0.00735 to +0.01948). | Both intervals span zero. Prespecified mismatching and single-site shuffling produced gains of similar magnitude. The cohorts share 139 assemblies. These are fold-conditional intervals for the two systems. [Observed and control folds](independent-heldout.md) |
+| Can cubic terms predict measured functional changes? | In each of two published fluorescence trials all 8,192 genotypes had measurements. The registered quadratic-to-cubic comparison increased pooled held-out R² from 0.87061 to 0.93007 in one and from 0.85439 to 0.91737 in the other. | Each of the ten trial/fold comparisons improved. These are genotypes from the same protein on an author-processed reporter scale. The two trials share source material. Inferring a physical interaction among three molecular partners would require a separate perturbation experiment. [Assay design, preprocessing and verification](fluorescence-benchmark.md) |
+| Does the GatABC development result transfer to new structure labels or survive a marker-tree control? | On 3AL0 and two copies in 3KFU, interface-macro DCA-APC average precision ranged from 0.0387 to 0.0438 using the same 888 matched observation scores. On a separate 590-tip GTDB tree and 192 prespecified MI coordinates, the maximum-statistic p-value was 0.54 and the minimum BH q was 0.192. | New coordinates tested structure correspondence using the original alignment. The tree test used 99 draws, with minimum p = 0.01, and 298 observations lacked an exact tip. [Depositions, marker identities and replay](experimental-benchmarks.md) |
+
+The sequence-cohort registration and biological source hashes preceded evaluation. Registration `0c09b90` froze the numerical protocol before opening the contact, model-loss or assay outcomes. The public evaluation drivers keep checksum identities and exclude raw data from the source distribution. [Cohort selection and exclusion criteria](independent-cohort-staging.md) · [Frozen evaluation policy](../benchmarks/independent_evaluation_policy.json)
+
+## How well are statistical claims calibrated?
+
+At nominal 5%, with 128 independent observations and 99 fitted pairwise-null draws per dataset, the larger independent-seed series rejected 10/320 independent cohorts (3.1%, 95% Wilson interval 1.7–5.7%), 18/320 pair-only triangles (5.6%, 3.6–8.7%) and 252/320 planted parity alternatives (78.8%, 73.9–82.9%). The first 80 pair-only datasets rejected more frequently, 8/80 (10.0%, 5.2–18.5%). Both runs are retained. On 320 related-tip simulations the correctly specified known-frequency F81 test rejected 5.0% (3.1–8.0%). Replacing the topology with a same-depth star raised rejection to 46.6% (41.2–52.0%). These numerical rates apply to the specified laws, depth, effect and candidate policy. Sparse mixed alphabets, contaminated matches, arbitrary trees and adaptive tuning can change them. [Independent sampling laws](null-models.md) · [Topology sensitivity](tree-model.md) · [Candidate discovery](../benchmarks/candidate-discovery.md)
+
+## Use and replay
+
+For a local synthetic protein/protein/RNA example, install the package from the clone and run the commands below. The offline HTML and downloaded score matrices remain usable after the original alignments are moved. Five molecule compositions and a Python equivalent are available. Original family data can enter through `triplet run --input input` or a versioned workflow configuration. [Installation](../README.md) · [Python and config guide](python-api.md) · [Offline explorer](offline-explorer.md)
+
+```shell
+triplet init --template protein-protein-rna --out demo
+triplet score --config demo/analysis.json --out demo/scored
+triplet benchmark --scores demo/scored --labels demo/labels.tsv --out demo/bench
+triplet report --run demo/scored --out demo/report
+```
+
+The original numerical replay matched all 1,261,968 local legacy score values. Five positive near-zero raw-MI values shifted one representable step against the historical cross-machine compact archive. The exact AP difference remains recorded. Separate phase records document method definitions, operating-system tests, constrained memory and performance comparisons, failed solvers and checkpoint recovery. [GatABC replay](../benchmarks/gatabc-regression.md) · [Validation and package checks](validation.md)
+
+The internal development version is `1.3.0.dev0`. Remaining release decisions include SPDX license, citation authors, redistribution terms for external materials and permission to publish. Original data and private inputs remain separate. Hosted macOS CI, a real Slurm scheduler, six original full GatABC ranking files and the original 2.3 GB family corpus were unavailable. The measured validation-module branch coverage of 83.33% is below the suggested 90%. Other optional or unverified scientific capabilities are itemized by specification section. [Completion audit](completion-audit.md) · [Release checks](release-engineering.md)

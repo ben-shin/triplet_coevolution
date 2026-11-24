@@ -12,6 +12,10 @@ include benchmarks/experimental_*.json
 include benchmarks/experimental_structure_metrics.tsv
 include benchmarks/independent_cohort_*.json
 include benchmarks/independent_cohort_*.gz
+include benchmarks/independent_evaluation_policy.json
+include benchmarks/independent_*_metrics.json
+include benchmarks/independent_*_metrics.tsv
+include benchmarks/independent_*_metrics.json.gz
 prune results
 prune input
 include input/README.md

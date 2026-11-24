@@ -52,6 +52,14 @@ def main():
         "SECURITY.md",
         "docs/release-engineering.md",
         "benchmarks/gatabc_manifest.json",
+        "benchmarks/independent_evaluation_policy.json",
+        "benchmarks/independent_contact_metrics.json.gz",
+        "benchmarks/independent_contact_metrics.tsv",
+        "benchmarks/independent_nested_metrics.json",
+        "benchmarks/experimental_fluorescence_results.json",
+        "benchmarks/verify_independent_contacts.py",
+        "benchmarks/verify_independent_nested.py",
+        "docs/implementation-report.md",
     ):
         assert (data / name).is_file(), name
     exe = Path(sysconfig.get_path("scripts")) / (

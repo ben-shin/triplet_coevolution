@@ -35,7 +35,7 @@ triplet score --config demo/analysis.json --out demo/scored
 triplet report --run demo/scored --out demo/offline
 ```
 
-Open `demo/offline/report.html` to inspect the 16 synthetic observations, signed score maps, benchmark curves, reference coordinates and tables. Run `triplet run --input demo/input --offline --out demo/matched` to exercise matching as well. Five molecule combinations, JSON inheritance, Python API examples and migration from 1.0.0 are documented in the [project and API guide](docs/python-api.md). The [implementation report](docs/completion-audit.md) records measured capabilities, unfinished scientific validation and release dependencies.
+Open `demo/offline/report.html` to inspect the 16 synthetic observations, signed score maps, benchmark curves, reference coordinates and tables. Run `triplet run --input demo/input --offline --out demo/matched` to exercise matching as well. Five molecule combinations, JSON inheritance, Python API examples and migration from 1.0.0 are documented in the [project and API guide](docs/python-api.md). The [implementation report](docs/implementation-report.md) gives measured contact recovery, held-out predictive gains and fluorescence results. The [requirement audit](docs/completion-audit.md) tracks capabilities, scientific limits and release dependencies.
 
 ## Run the complete workflow
 
