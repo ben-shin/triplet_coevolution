@@ -1,0 +1,30 @@
+{
+  "protocol": "experimental-structural-and-tree-benchmark-v1",
+  "frozen_score_files": {"score_manifest.json":"a2b78c9aba5c662732a8496a8a620cbb2e3851a7fc5e1727607bc6cd1117cdbd","pair_scores.npz":"f15a68ebe5dad3773dce185de31a2fdd3a9f61684659e4b26c9f4237fcffd06c"},
+  "structural": {
+    "assembly":"1","model":1,
+    "copies":{"3AL0":[["A","B","C"]],"3KFU":[["E","F","G"],["H","I","J"]]},
+    "entity_ids":{"3AL0":["1","2","3"],"3KFU":["2","3","4"]},
+    "fusion":"GatC-only deposited UniProt alignment segment of 3AL0 C; exclude linker and ligase. If no unambiguous annotated boundary, abstain for C.",
+    "min_unique_identity":0.25,"min_unique_coverage":0.6,"strict_identity":0.30,"strict_coverage":0.70,
+    "primary_angstrom":8,"sensitivity_angstrom":[4,5,8,10],"metrics":["mi_bits","mi_apc","dca_frobenius","dca_apc"],
+    "top_k":[10,50],"universe":"AB, AC, BC Cartesian reference axes; natural negatives; common finite scores and observed labels. Each copy separately. Common observed pairs across all copies as sensitivity.",
+    "top_k_unknowns":"finite scores before label masking; sort descending scores then ascending physical reference coordinates. Report known positives, known negatives, unknowns and precision bounds.",
+    "primary_ranking":"tie-grouped AP and ROC AUC; macro equal eligible interface weight; no independence assumed between copies"
+  },
+  "tree":{
+    "release":"GTDB R232 232.0","tree_file":"bac120_r232.tree.gz","official_index":"https://data.gtdb.ecogenomic.org/releases/release232/232.0/",
+    "mapping":"All three accessions for each observation must share one locally witnessed UniProt proteome. Match exact versioned assembly to an actual GTDB bacterial tree tip, directly or via an official NCBI identical paired assembly; reject missing, conflicting or many-to-one assignments. No species-level substitutions.",
+    "min_observations":32,"max_columns_per_component":8,"min_nonmissing":0.80,"site_selector":"Take evenly spaced original-order indices (floor of linspace) among variable retained positions with canonical fraction >=0.80 in admitted rows, ignoring scores and labels.",
+    "null":"Native empirical independent-site F81 equal-input simulations (pseudocount mass 1), mask-conditioned; 99 draws, seed 732119, no sequence reweighting. Report unweighted canonical-complete-case raw MI for each intercomponent pair plus global maximum-statistic tail; BH across all tested pairs.",
+    "branch_scale":1.0,"null_replicates":99,"seed":732119,
+    "clades":"Leave each GTDB phylum with at least 8 admitted tips out, retaining >=24 training tips. Evaluate Spearman agreement of raw MI rankings train vs holdout and overlap of 10 highest-ranked common pairs. Report every eligible split.",
+    "marker_caveat":"Audit bacterial marker overlap with GatABC. If overlap cannot be excluded, call this an externally inferred marker-tree sensitivity, not a fully independent marker panel."
+  },
+  "independent_prospective":[
+    {"system":"E. coli RNA polymerase core","pdb":"4YG2","components":["rpoA","rpoB","rpoC"],"reference_accessions":["P0A7Z4","P0A8V2","P0A8T7"],"copy_rule":"assembly 1 model 1, both alpha copies separately with beta/beta-prime; every homologous trimer enumerated"},
+    {"system":"E. coli large ribosomal subunit","pdb":"4YBB","components":["5S rRNA","uL5 (rplE)","uL18 (rplR)"],"reference_accessions":["RF00001","P62399","P0C018"],"copy_rule":"assembly 1 model 1, native 5S plus uL5 and uL18 from same declared ribosome, repeats reported separately; abstain when co-membership is ambiguous"},
+    {"system":"Entacmaea quadricolor fluorescent protein","doi":"10.1038/s41467-019-12130-8","outcome":"Published fluorescence of all 2^13 binary genotypes. Use author-defined brightness scale and labels; train complete degree 1 vs 2 vs 3 binary polynomial models on folds stratified by Hamming weight using SHA256(bitstring) modulo 5; report out-of-fold RMSE, R-squared and third-order Walsh variation. Single-protein measurement, different from interprotein coupling."}
+  ],
+  "independent_admission":"For protein/mixed systems use each GTDB representative assembly with one homolog per declared component from annotated NCBI/UniProt genes or Infernal/Rfam for 5S. Reject unresolved copies rather than choose by interactions. Require >=128 unique genomes, >=4 phyla and complete matched component coverage; fit and freeze weights/settings before opening labels. If not met report exclusions; no replacement systems. No claim of transfer across sequence systems from the GatABC structural experiment."
+}
