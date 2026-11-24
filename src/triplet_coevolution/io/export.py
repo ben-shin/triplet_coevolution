@@ -1,7 +1,7 @@
-# export ranked mi pairs w original aln and ref positions
+"""Ranked views of complete MI and DCA scores with mapped coordinates."""
 
 import csv
-from heapq import nsmallest
+from collections.abc import Iterator
 from numbers import Integral
 from pathlib import Path
 
@@ -9,9 +9,11 @@ import numpy as np
 
 from triplet_coevolution.core.coordinates import ReferenceCoordinates
 from triplet_coevolution.inference.mi import MIBlock, TripletMI
+from triplet_coevolution.inference.potts import DCABlock
+from triplet_coevolution.inference.scores import Method, coordinate_axes, get_score, ranked_indices
 
 FIELDS = (
-  "rank",
+  "rank", "competition_rank", "statistic", "direction", "score",
   "pair",
   "x_component",
   "x_reference_id",
@@ -32,16 +34,21 @@ FIELDS = (
 )
 
 
+DCA_FIELDS = tuple(
+  {"mi_bits": "dca_frobenius", "mi_apc": "dca_apc"}.get(key, key) for key in FIELDS
+)
+
+
 def _check_options(
   score: str,
   max_pairs: int | None,
   min_valid: int,
   require_reference: bool,
+  method: Method = "mi",
 ) -> None:
   """check ranking and export options"""
 
-  if score not in {"mi_bits", "mi_apc"}:
-    raise ValueError("score must be mi_bits or mi_apc")
+  get_score(score, method)
 
   if max_pairs is not None and (
     isinstance(max_pairs, bool)
@@ -117,57 +124,62 @@ def ranked_mi_rows(
   _check_options(score, max_pairs, min_valid, require_reference)
   _check_block(block, x_map, y_map)
 
-  scores = getattr(block, score)
+  return list(_ranked_pair_rows(
+    block, x_map, y_map, score, max_pairs, min_valid, require_reference,
+  ))
 
-  # build candidates without storing full row dicts
-  def candidates():
-    for i in range(x_map.n_sites):
-      if require_reference and x_map.reference_positions[i] is None:
-        continue
 
-      for j in range(y_map.n_sites):
-        if require_reference and y_map.reference_positions[j] is None:
-          continue
-
-        value = float(scores[i, j])
-
-        if np.isfinite(value) and block.n_valid[i, j] >= min_valid:
-          yield (-value, i, j)
-
-  # stable tie breaks use current aln cols
-  if max_pairs is None:
-    selected = sorted(candidates())
-  else:
-    selected = nsmallest(max_pairs, candidates())
-
-  rows = []
-
-  for rank, (_, i, j) in enumerate(selected, start=1):
-    x = x_map.site(i)
-    y = y_map.site(j)
-
-    rows.append({
+def _ranked_pair_rows(
+  block: MIBlock | DCABlock,
+  x_map: ReferenceCoordinates,
+  y_map: ReferenceCoordinates,
+  score: str,
+  max_pairs: int | None,
+  min_valid: int,
+  require_reference: bool,
+) -> Iterator[dict[str, object]]:
+  spec = get_score(score)
+  x_axis, y_axis = coordinate_axes((x_map, y_map), require_reference)
+  values = spec.values(block)
+  counts = block.n_valid
+  if (len(x_axis), len(y_axis)) != values.shape:
+    ix = np.ix_(x_axis, y_axis)
+    values, counts = values[ix], counts[ix]
+  if np.any(counts < min_valid):
+    values = np.where(counts >= min_valid, values, np.nan)
+  raw, corrected = (
+    ("mi_bits", "mi_apc") if spec.method == "mi" else ("dca_frobenius", "dca_apc")
+  )
+  raw_values = get_score(raw).values(block)
+  corrected_values = get_score(corrected).values(block)
+  for flat, rank, competition_rank in ranked_indices(values, score, max_pairs):
+    xi, yi = divmod(flat, len(y_axis))
+    i, j = x_axis[xi], y_axis[yi]
+    x, y = x_map.site(i), y_map.site(j)
+    yield {
       "rank": rank,
-      "pair": block.component_x + block.component_y,
-      "x_component": block.component_x,
+      "competition_rank": competition_rank,
+      "statistic": score,
+      "direction": spec.direction,
+      "score": float(values[xi, yi]),
+      "pair": x_map.component + y_map.component,
+      "x_component": x_map.component,
       "x_reference_id": x_map.reference_id,
       "x_col": x.current_column,
       "x_original_col": x.original_column,
       "x_reference_pos": x.reference_position,
       "x_symbol": x.reference_symbol,
-      "y_component": block.component_y,
+      "y_component": y_map.component,
       "y_reference_id": y_map.reference_id,
       "y_col": y.current_column,
       "y_original_col": y.original_column,
       "y_reference_pos": y.reference_position,
       "y_symbol": y.reference_symbol,
-      "mi_bits": float(block.mi_bits[i, j]),
-      "mi_apc": float(block.mi_apc[i, j]),
+      raw: float(raw_values[i, j]),
+      corrected: float(corrected_values[i, j]),
       "n_valid": int(block.n_valid[i, j]),
       "valid_weight": float(block.valid_weight[i, j]),
-    })
-
-  return rows
+    }
 
 
 def write_mi_table(
@@ -183,32 +195,47 @@ def write_mi_table(
 ) -> Path:
   """write ranked mi pairs to csv or tsv"""
 
+  _check_options(score, max_pairs, min_valid, require_reference)
+  _check_block(block, x_map, y_map)
+  rows = _ranked_pair_rows(block, x_map, y_map, score, max_pairs, min_valid, require_reference)
+  return _write_table(path, FIELDS, rows)
+
+
+def write_dca_table(
+  path: str | Path,
+  pair: str,
+  block: DCABlock,
+  x_map: ReferenceCoordinates,
+  y_map: ReferenceCoordinates,
+  *,
+  score: str = "dca_apc",
+  max_pairs: int | None = 1000,
+  min_valid: int = 2,
+  require_reference: bool = False,
+) -> Path:
+  """Write a ranked DCA view after selecting the statistic on the full block."""
+  _check_options(score, max_pairs, min_valid, require_reference, method="dca")
+  if pair != x_map.component + y_map.component or pair not in {"AB", "AC", "BC"}:
+    raise ValueError("DCA pair and reference maps must match")
+  if not isinstance(block, DCABlock):
+    raise TypeError("block must be a DCABlock")
+  if any(arr.shape != (x_map.n_sites, y_map.n_sites) for arr in vars(block).values()):
+    raise ValueError("DCA arrays must match reference maps")
+  rows = _ranked_pair_rows(block, x_map, y_map, score, max_pairs, min_valid, require_reference)
+  return _write_table(path, DCA_FIELDS, rows)
+
+
+def _write_table(path, fields, rows):
   path = Path(path).expanduser()
-
-  delimiter = {
-    ".csv": ",",
-    ".tsv": "\t",
-  }.get(path.suffix.lower())
-
+  delimiter = {".csv": ",", ".tsv": "\t"}.get(path.suffix.lower())
   if delimiter is None:
     raise ValueError("output path must end in .csv or .tsv")
-
-  rows = ranked_mi_rows(
-    block,
-    x_map,
-    y_map,
-    score=score,
-    max_pairs=max_pairs,
-    min_valid=min_valid,
-    require_reference=require_reference,
-  )
-
   path.parent.mkdir(parents=True, exist_ok=True)
 
   with path.open("w", encoding="utf-8", newline="") as handle:
     writer = csv.DictWriter(
       handle,
-      fieldnames=FIELDS,
+      fieldnames=fields,
       delimiter=delimiter,
     )
     writer.writeheader()

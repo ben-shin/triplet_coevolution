@@ -32,6 +32,7 @@ class TripletMI:
     weight_sum: float
     include_gaps: bool
     min_valid: int
+    apc_universe: str = "retained"
 
 
 def _check_min_valid(min_valid: int) -> int:

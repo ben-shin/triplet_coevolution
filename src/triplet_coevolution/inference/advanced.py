@@ -3,23 +3,35 @@
 import csv
 import hashlib
 import json
+from collections.abc import Callable
 from math import prod
 from pathlib import Path
 
 import numpy as np
 
 from triplet_coevolution.inference.global_potts import global_triples
-from triplet_coevolution.inference.mi import triplet_mi
-from triplet_coevolution.inference.potts import PAIRS, direct_couplings
+from triplet_coevolution.inference.mi import TripletMI, triplet_mi
+from triplet_coevolution.inference.potts import PAIRS, DCABlock, direct_couplings
+from triplet_coevolution.inference.scores import (
+    APCUniverse,
+    check_apc_universe,
+    coordinate_axes,
+    dca_with_apc_policy,
+    get_score,
+    mi_with_apc_policy,
+    pair_coverage,
+    ranked_indices,
+)
 from triplet_coevolution.inference.threebody import fit_triples, sample_candidates
 from triplet_coevolution.inference.weights import _WeightComparisons
+from triplet_coevolution.io.export import write_dca_table
 from triplet_coevolution.validation.nulls import permutation_test
 from triplet_coevolution.validation.structure import contact_metrics, read_contacts
 
 SITE_FIELDS = ("component", "reference_id", "col", "original_col", "reference_pos", "symbol")
 PAIR_FIELDS = ["pair", *(f"{prefix}_{key}" for prefix in "xy" for key in SITE_FIELDS)]
 TRIPLE_FIELDS = [f"{prefix}_{key}" for prefix in "abc" for key in SITE_FIELDS]
-NULL_FIELDS = ["statistic", "score", "permutation_p", "bh_q", "null_draws"]
+NULL_FIELDS = ["statistic", "direction", "score", "permutation_p", "bh_q", "null_draws"]
 
 
 class ModelFitError(ValueError):
@@ -132,12 +144,33 @@ def write_advanced_results(
     score="mi_apc",
     threebody_model="local",
     global_l2=0.1,
+    dca_score: str = "dca_apc",
+    threebody_score: str = "threebody_rms",
+    apc_universe: APCUniverse = "retained",
+    score_sink: Callable[[TripletMI, dict[str, DCABlock]], None] | None = None,
 ):
-    """Write within caller-managed staging. Return JSON-native settings, method and file inventory."""
-    if fmt not in {"csv", "tsv"} or score not in {"mi_bits", "mi_apc"}:
-        raise ValueError("advanced results require CSV/TSV and mi_bits or mi_apc")
-    if permutations < 0 or seed < 0 or max_triplets < 1 or max_pairs < 1:
+    """Write staged ranked tables and return a JSON-native inventory.
+
+    score_sink receives the complete observed MI and DCA blocks exactly once.
+    Arrays use the requested APC domain. There is no second observed fit.
+    The callback receives an empty DCA mapping when that method is disabled.
+    """
+    if fmt not in {"csv", "tsv"}:
+        raise ValueError("advanced results require CSV or TSV")
+    specs = {
+        "mi": get_score(score, "mi"),
+        "dca": get_score(dca_score, "dca"),
+        "threebody": get_score(threebody_score, "threebody"),
+    }
+    check_apc_universe(apc_universe)
+    if permutations < 0 or seed < 0 or max_triplets < 1 or (
+        max_pairs is not None and max_pairs < 1
+    ):
         raise ValueError("seed/permutations must be nonnegative and output limits positive")
+    if mi_result is not None and (
+        mi_result.min_valid != min_valid or mi_result.n_observations != msa.n_observations
+    ):
+        raise ValueError("supplied MI and refits require matching min_valid and observation count")
     if triplet_candidates is not None and not threebody:
         raise ValueError("triplet candidates require threebody inference")
     if threebody_model not in {"local", "global"} or (
@@ -155,17 +188,12 @@ def write_advanced_results(
         "triplet_candidates": _identity(triplet_candidates),
         "contacts": _identity(contacts),
     }
-    axes = [
-        np.asarray(
-            [
-                i
-                for i, pos in enumerate(m.reference_positions)
-                if not require_reference or pos is not None
-            ],
-            dtype=int,
-        )
-        for m in maps
-    ]
+    axes = coordinate_axes(maps, require_reference)
+    mapped_axes = coordinate_axes(maps, True)
+    pair_axes = {
+        method: mapped_axes if spec.correction == "APC" and apc_universe == "reference" else axes
+        for method, spec in specs.items() if method != "threebody"
+    }
     fixed = []
     eligible = 0
     selection = None
@@ -197,23 +225,34 @@ def write_advanced_results(
         "require_reference": require_reference,
         "fmt": fmt,
         "mi_statistic": score,
+        "dca_statistic": dca_score if dca else None,
+        "threebody_statistic": threebody_score if threebody else None,
+        "apc_universe": apc_universe,
+        "score_definitions": {
+            key: spec.metadata(apc_universe=apc_universe, threebody_model=threebody_model)
+            for key, spec in specs.items()
+            if key == "mi" or (key == "dca" and dca) or (key == "threebody" and threebody)
+        },
         **extra_inputs,
     }
 
-    def score_data(data, row_weights, mi=None):
+    def score_data(data, row_weights, mi=None, *, collect=False):
         pair_scores = {}
-        if permutations or labels:
-            mi = mi if mi is not None else triplet_mi(data, row_weights, min_valid=min_valid)
+        if permutations or labels or collect:
+            if mi is None:
+                mi = triplet_mi(
+                    data, row_weights, min_valid=min_valid,
+                    include_gaps=mi_result.include_gaps if mi_result is not None else False,
+                )
+            mi = mi_with_apc_policy(mi, maps, apc_universe)
             pair_scores["mi"] = {
-                pair: getattr(getattr(mi, pair.lower()), score) for pair in ("AB", "AC", "BC")
+                pair: specs["mi"].values(getattr(mi, pair.lower())) for pair in ("AB", "AC", "BC")
             }
-        dca_blocks = (
-            _fit("dca", direct_couplings, data, row_weights, ridge=ridge, min_valid=min_valid)
-            if dca
-            else {}
-        )
+        dca_blocks = {}
         if dca:
-            pair_scores["dca"] = {pair: block.frobenius for pair, block in dca_blocks.items()}
+            fitted = _fit("dca", direct_couplings, data, row_weights, ridge=ridge, min_valid=min_valid)
+            dca_blocks = dca_with_apc_policy(fitted, maps, apc_universe)
+            pair_scores["dca"] = {pair: specs["dca"].values(b) for pair, b in dca_blocks.items()}
         diagnostics = {}
         triples = []
         if threebody and not fixed:
@@ -240,27 +279,42 @@ def write_advanced_results(
             )
         vectors = {
             key: np.concatenate(
-                [blocks["ABC"[a] + "ABC"[b]][np.ix_(axes[a], axes[b])].ravel() for a, b in PAIRS]
+                [
+                    blocks["ABC"[a] + "ABC"[b]][np.ix_(pair_axes[key][a], pair_axes[key][b])].ravel()
+                    for a, b in PAIRS
+                ]
             )
             for key, blocks in pair_scores.items()
         }
         if threebody:
-            vectors["threebody"] = np.array([row.threebody_rms for row in triples])
+            vectors["threebody"] = np.array([getattr(row, threebody_score) for row in triples])
+        if collect:
+            score_sink(mi, dca_blocks)
         return pair_scores, dca_blocks, triples, vectors, diagnostics
 
-    pair_scores, dca_blocks, triples, observed, diagnostics = score_data(msa, weights, mi_result)
+    pair_scores, dca_blocks, triples, observed, diagnostics = score_data(
+        msa, weights, mi_result, collect=score_sink is not None
+    )
     null = {}
     if permutations:
         comparisons = _WeightComparisons(msa.components, reuse=True)
+
+        # The null counter uses a common upper-tail comparison. Negation implements
+        # the registered lower tail without altering the signed score in exports.
+        def oriented(vectors):
+            return {
+                key: -values if specs[key].direction == "lower" else values
+                for key, values in vectors.items()
+            }
 
         def refit(shuffled):
             w = comparisons.weights(
                 weights.identity_threshold, weights.min_overlap, shuffled.components
             )
-            return score_data(shuffled, w)[3]
+            return oriented(score_data(shuffled, w)[3])
 
         null = permutation_test(
-            msa, observed, refit, permutations=permutations, seed=seed, strata=strata
+            msa, oriented(observed), refit, permutations=permutations, seed=seed, strata=strata
         )
     out.mkdir(parents=True, exist_ok=True)
 
@@ -277,33 +331,20 @@ def write_advanced_results(
             for key, value in _site(m, j, prefix).items()
         }
 
-    def ranked_pair_rows(a, b):
-        pair = "ABC"[a] + "ABC"[b]
-        block = dca_blocks[pair]
-        values = block.frobenius[np.ix_(axes[a], axes[b])]
-        order = np.argsort(-values.ravel(), kind="stable")
-        for rank, index in enumerate(order[:max_pairs], 1):
-            x, y = np.unravel_index(index, values.shape)
-            i, j = axes[a][x], axes[b][y]
-            if not np.isfinite(values[x, y]):
-                break
-            yield {
-                "rank": rank,
-                **pair_row(a, b, i, j),
-                "dca_frobenius": values[x, y],
-                "dca_apc": block.corrected[i, j],
-                "n_valid": block.n_valid[i, j],
-                "valid_weight": block.valid_weight[i, j],
-            }
-
+    ranking = {}
     if dca:
         for a, b in PAIRS:
             pair = "ABC"[a] + "ABC"[b]
-            write(
-                f"dca_{pair.lower()}",
-                ["rank", *PAIR_FIELDS, "dca_frobenius", "dca_apc", "n_valid", "valid_weight"],
-                ranked_pair_rows(a, b),
-            )
+            name = f"dca_{pair.lower()}"
+            block = dca_blocks[pair]
+            options = {
+                "score": dca_score, "max_pairs": max_pairs, "min_valid": min_valid,
+                "require_reference": require_reference,
+            }
+            path = write_dca_table(out / f"{name}.{fmt}", pair, block, maps[a], maps[b], **options)
+            coverage = pair_coverage(block, maps[a], maps[b], **options, apc_universe=apc_universe)
+            ranking[name] = coverage
+            outputs[name] = {"path": path.name, "rows": coverage["exported"]}
     if threebody:
         triple_fields = [
             "threebody_rms",
@@ -313,14 +354,22 @@ def write_advanced_results(
             "observed_cells",
             "possible_cells",
         ]
-        order = np.argsort(-observed["threebody"], kind="stable")
+        values = observed["threebody"]
+        finite = int(np.isfinite(values).sum())
+        ranking["threebody_abc"] = {
+            "total": eligible, "tested": len(fixed), "finite": finite, "exported": finite,
+            "selection": selection, "complete_candidates": True, "exhaustive": len(fixed) == eligible,
+        }
         write(
             "threebody_abc",
-            ["rank", *TRIPLE_FIELDS, *triple_fields],
+            ["rank", "competition_rank", "statistic", "direction", "score", *TRIPLE_FIELDS, *triple_fields],
             (
-                {"rank": rank, **triple_row(i), **vars(triples[i])}
-                for rank, i in enumerate(order, 1)
-                if np.isfinite(observed["threebody"][i])
+                {
+                    "rank": rank, "competition_rank": competition, "statistic": threebody_score,
+                    "direction": specs["threebody"].direction, "score": values[i],
+                    **triple_row(i), **vars(triples[i]),
+                }
+                for i, rank, competition in ranked_indices(values, threebody_score)
             ),
         )
 
@@ -330,19 +379,20 @@ def write_advanced_results(
                 yield triple_row(i)
         else:
             for a, b in PAIRS:
-                for i in axes[a]:
-                    for j in axes[b]:
+                for i in pair_axes[method][a]:
+                    for j in pair_axes[method][b]:
                         yield pair_row(a, b, i, j)
 
     for method, (p, q) in null.items():
-        statistic = {"mi": score, "dca": "dca_frobenius", "threebody": "threebody_rms"}[method]
+        spec = specs[method]
         write(
             "permutation_" + method,
             [*(TRIPLE_FIELDS if method == "threebody" else PAIR_FIELDS), *NULL_FIELDS],
             (
                 {
                     **row,
-                    "statistic": statistic,
+                    "statistic": spec.name,
+                    "direction": spec.direction,
                     "score": value,
                     "permutation_p": pv,
                     "bh_q": qv,
@@ -367,7 +417,7 @@ def write_advanced_results(
             methods[method] = contact_metrics(labels, labelled_scores)
         result = {"methods": methods, "mi_statistic": score}
         if dca:
-            result["dca_statistic"] = "dca_frobenius"
+            result["dca_statistic"] = dca_score
         (out / "contacts.json").write_text(
             json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
         )
@@ -375,6 +425,7 @@ def write_advanced_results(
     return {
         "settings": settings,
         "outputs": outputs,
+        "ranking": ranking,
         "global_fit": diagnostics,
         "candidates": {
             "eligible": eligible,
