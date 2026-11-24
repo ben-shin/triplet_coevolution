@@ -5,7 +5,7 @@ import csv
 import numpy as np
 
 from triplet_coevolution.config import COMPONENTS
-from triplet_coevolution.core.alphabets import CANONICAL
+from triplet_coevolution.core.coordinates import build_reference_map
 from triplet_coevolution.io.alignments import read_msa
 from triplet_coevolution.io.metadata import (
     REQUIRED_COLUMNS,
@@ -13,8 +13,8 @@ from triplet_coevolution.io.metadata import (
     read_triplet_table,
     write_triplet_table,
 )
-from triplet_coevolution.msa.qc import triplet_qc
-from triplet_coevolution.msa.support import retained_sites, site_masks
+from triplet_coevolution.msa.diagnostics import QCPolicy, inspect_qc
+from triplet_coevolution.msa.support import site_masks
 from triplet_coevolution.msa.synchronize import synchronize
 
 
@@ -24,56 +24,69 @@ def filter_observations(prepared, kwargs):
         read_msa(kwargs[c.lower()], c, kwargs[f"{c.lower()}_type"]) for c in COMPONENTS
     )
     original = read_triplet_table(kwargs["matches"])
-    panel = site_masks(kwargs["site_panel"], components) if kwargs.get("site_panel") else None
+    maps = tuple(
+        build_reference_map(
+            c,
+            kwargs[f"{c.name.lower()}_ref"],
+            kwargs.get(f"{c.name.lower()}_start", 1),
+            row_id=kwargs.get(f"{c.name.lower()}_ref_row"),
+            strand=kwargs.get(f"{c.name.lower()}_strand", "+"),
+        )
+        for c in components
+    )
+    panel = site_masks(kwargs["site_panel"], components, maps) if kwargs.get("site_panel") else None
     thresholds = {
         k: kwargs.get(k, 0.5) for k in ("min_coverage", "max_gap_fraction", "max_missing_fraction")
     }
-    table, preview, pass_number = original, [], 0
+    supported = inspect_qc(
+        synchronize(*components, original),
+        maps,
+        original,
+        column_options=thresholds,
+        panel_masks=panel,
+        policy=QCPolicy.from_config(
+            {
+                "iteration": "fixed_point",
+                "rows": {c: {"min_canonical": 1} for c in COMPONENTS},
+            }
+        ),
+    )
+    masks = supported.masks
+    pass_number = len(supported.summary["passes"])
+    remaining = supported.row_indices
+    table = (
+        TripletTable(
+            tuple(original.matches[i] for i in remaining),
+            original.extra_columns,
+            tuple(original.annotations[i] for i in remaining),
+        )
+        if remaining
+        else None
+    )
+    preview = []
     exclusions = prepared / "observation_qc.tsv"
     matches = prepared / "scored_matches.tsv"
     columns = prepared / "scored_columns.tsv"
+    failures = {}
+    for row in supported.rows:
+        if row["exclusion_reasons"]:
+            failure = failures.setdefault(row["observation_id"], (row["exclusion_pass"], []))
+            failure[1].append(row["component"])
     with exclusions.open("x", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
         writer.writerow((*REQUIRED_COLUMNS, "qc_pass", "components_without_canonical_residues"))
-        while table is not None:
-            pass_number += 1
-            aligned = synchronize(*components, table)
-            masks = retained_sites(triplet_qc(aligned), thresholds, panel)
-            present = []
-            for part, keep in zip(aligned.components, masks, strict=True):
-                values = part.matrix[:, keep]
-                present.append(
-                    ((values >= 0) & (values < len(CANONICAL[part.molecule]))).any(axis=1)
+        failed = sorted(
+            (m for m in original.matches if m.observation_id in failures),
+            key=lambda m: failures[m.observation_id][0],
+        )
+        for m in failed:
+            turn, identifiers = failures[m.observation_id]
+            absent = ",".join(identifiers)
+            writer.writerow((m.observation_id, m.a_id, m.b_id, m.c_id, turn, absent))
+            if len(preview) < 10:
+                preview.append(
+                    {"observation_id": m.observation_id, "components": absent, "pass": turn}
                 )
-            supported = np.logical_and.reduce(present)
-            if supported.all():
-                break
-            for idx in np.flatnonzero(~supported):
-                match = table.matches[idx]
-                absent = ",".join(
-                    c for c, ok in zip(COMPONENTS, present, strict=True) if not ok[idx]
-                )
-                writer.writerow(
-                    (match.observation_id, match.a_id, match.b_id, match.c_id, pass_number, absent)
-                )
-                if len(preview) < 10:
-                    preview.append(
-                        {
-                            "observation_id": match.observation_id,
-                            "components": absent,
-                            "pass": pass_number,
-                        }
-                    )
-            remaining = np.flatnonzero(supported)
-            table = (
-                TripletTable(
-                    tuple(table.matches[i] for i in remaining),
-                    table.extra_columns,
-                    tuple(table.annotations[i] for i in remaining),
-                )
-                if len(remaining)
-                else None
-            )
     if table:
         write_triplet_table(matches, table)
     else:

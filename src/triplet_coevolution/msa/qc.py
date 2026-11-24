@@ -27,6 +27,7 @@ class ComponentQC:
     coverage: np.ndarray
     entropy_bits: np.ndarray
     conservation: np.ndarray
+    state_counts: np.ndarray | None = None
 
     @property
     def mean_coverage(self) -> float:
@@ -121,6 +122,7 @@ def component_qc(msa: ComponentMSA) -> ComponentQC:
 
     # prevent cached qc result arrays being overwritten
     for array in(
+        counts,
         n_canonical,
         gap_fraction,
         missing_fraction,
@@ -141,6 +143,7 @@ def component_qc(msa: ComponentMSA) -> ComponentQC:
         coverage=coverage,
         entropy_bits=entropy_bits,
         conservation=conservation,
+        state_counts=counts,
     )
 
 def triplet_qc(msa: MatchedTripletMSA) -> TripletQC:
