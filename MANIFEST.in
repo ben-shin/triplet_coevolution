@@ -8,4 +8,5 @@ include benchmarks/gatabc_manifest.json
 recursive-include benchmarks *.md
 include benchmarks/experimental_*.json
 include benchmarks/experimental_structure_metrics.tsv
-include benchmarks/independent_cohort_protocol.json
+include benchmarks/independent_cohort_*.json
+include benchmarks/independent_cohort_*.gz

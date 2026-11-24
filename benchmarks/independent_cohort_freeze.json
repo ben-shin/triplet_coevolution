@@ -1,0 +1,183 @@
+{
+  "biopython": "1.88",
+  "frame": {
+    "all_tree_tips": 189801,
+    "candidate_cap": 1536,
+    "complete_eligible": 8380,
+    "eligible_phyla": 45,
+    "frame_counts": {
+      "GenBank_only": 150716,
+      "incomplete": 30352,
+      "no_current_RefSeq_record": 353
+    },
+    "frame_sha256": "b33362a447c2b8a79ac9cf9e468d3ec3a367a69cda28d635eb55dae1984dd642",
+    "preregistration": "8ba73f61cf525a8b5a8880837198da01edee2d8349d30ab9cdfe943d27ada577",
+    "sampled_phyla": 45
+  },
+  "phase": "sequence data only",
+  "python": "3.13.15",
+  "reference_correspondence_sha256": "4754824f584b56d1a0e0f8c6a8eb4856f79742f40f25caf7268587e42e448284",
+  "screen_sha256": "a1cf7a4aaf77f7931b5b7a5a5d8e7b643d27b956e96060487bda577b0e862c89",
+  "screened": 576,
+  "source_bytes": 547266092,
+  "source_manifest_sha256": "d335cbe2da2bbb05c7459dbefe107e2d437598e31043a3bb7a959209d4d8dfa1",
+  "sources": 1256,
+  "systems": {
+    "ribosome": {
+      "accepted": 163,
+      "admission_gate": true,
+      "distinct_phyla": 29,
+      "exclusion_reasons_nonexclusive": {
+        "5S alignment_gate": 5,
+        "5S multiple_loci": 408,
+        "rplE missing_versioned_protein;pseudogene": 1,
+        "rplR missing_versioned_protein;partial;pseudogene": 3,
+        "rplR multiple_loci": 1
+      },
+      "files_sha256": {
+        "A.fasta": "eef73738a42953ab7375ec9d73c07a870014418a504aa89b459bc0ccf9b6fbcc",
+        "B.fasta": "935c78385a0201876304609f2e4a2f89105107d2eb607d2b39c4c46470d13356",
+        "C.fasta": "359e9d1b61721be87f83abda04847968634d9641d41c9a8b2795df4dc9040d15",
+        "loci.tsv": "5705e2262f752c9e20319408f7bb5dd50d53ee8a610bc469f7696bb9d4655173",
+        "matches.tsv": "a20aee7e598643ddc0fbf8ecbd9e85b7b09667bd564b42a6f8f017dd049652a1",
+        "prelabel-sites.json": "494950de763200a013ec99262db387442d46a7447ab50bace24cd112753b32d9",
+        "prelabel-weights.tsv": "9b8a9ac793518c043905a2a622b41f772482b2814d4113b63a796dbf0bace125"
+      },
+      "phylum_counts": {
+        "Acidobacteriota": 15,
+        "Actinomycetota": 1,
+        "Aquificota": 4,
+        "Armatimonadota": 2,
+        "Babelota": 1,
+        "Bacillota_I": 7,
+        "Bacteroidota": 2,
+        "Bdellovibrionota": 7,
+        "Bipolaricaulota": 1,
+        "Caldisericota": 1,
+        "Calditrichota": 1,
+        "Chlamydiota": 14,
+        "Chloroflexota": 13,
+        "Cyanobacteriota": 3,
+        "Desulfobacterota": 5,
+        "Elusimicrobiota": 3,
+        "Fidelibacterota": 1,
+        "Gemmatimonadota": 6,
+        "Nitrospinota": 1,
+        "Nitrospirota": 10,
+        "Omnitrophota": 1,
+        "Patescibacteriota": 14,
+        "Planctomycetota": 9,
+        "Pseudomonadota": 4,
+        "Spirochaetota": 11,
+        "Thermosulfidibacterota": 1,
+        "Thermotogota": 9,
+        "Verrucomicrobiota": 15,
+        "Vulcanimicrobiota": 1
+      },
+      "protocol_sha256": "8ba73f61cf525a8b5a8880837198da01edee2d8349d30ab9cdfe943d27ada577",
+      "screened": 576,
+      "sites": {
+        "A": {
+          "reference_width": 120,
+          "retained": 100
+        },
+        "B": {
+          "reference_width": 179,
+          "retained": 167
+        },
+        "C": {
+          "reference_width": 117,
+          "retained": 108
+        }
+      }
+    },
+    "rnap": {
+      "accepted": 461,
+      "admission_gate": true,
+      "distinct_phyla": 40,
+      "exclusion_reasons_nonexclusive": {
+        "rpoA missing_locus": 1,
+        "rpoA missing_versioned_protein;partial;pseudogene": 1,
+        "rpoA missing_versioned_protein;pseudogene": 1,
+        "rpoA multiple_loci": 49,
+        "rpoB conflicting_target_roles": 4,
+        "rpoB missing_versioned_protein;partial;pseudogene": 4,
+        "rpoB missing_versioned_protein;pseudogene": 3,
+        "rpoB multiple_loci": 24,
+        "rpoC alignment_gate": 20,
+        "rpoC conflicting_target_roles": 4,
+        "rpoC missing_locus": 1,
+        "rpoC missing_versioned_protein;partial;pseudogene": 5,
+        "rpoC missing_versioned_protein;pseudogene": 5,
+        "rpoC multiple_loci": 6
+      },
+      "files_sha256": {
+        "A.fasta": "c4ad8376bbf037cb9f39bfba117cdb54f05259329e8af144d5afbac14f580ca1",
+        "B.fasta": "faea3feb52d0ce0eded0ee86e0820d2a8cdd14e79a88548fba167d4f33232b54",
+        "C.fasta": "c600b5cfac13168b6076f1612dc885b899b3ac4360cd95fcec387c99e5b085b6",
+        "loci.tsv": "f1857ee769f163e21c2110b1ca05827306587b1f55ee9250fc925dd549081350",
+        "matches.tsv": "d37701fd71407e5650ea54bdf0d723058e92c102a640e2d253f0d831b8d6d067",
+        "prelabel-sites.json": "caecef50146e3ddc4709ae7f57cc69687b4792216dc7d1d2de1863e5b05fb240",
+        "prelabel-weights.tsv": "721c9afc567fa902109e44e90deea2915b250439dcb67b24885503ff723d64eb"
+      },
+      "phylum_counts": {
+        "Acidobacteriota": 24,
+        "Actinomycetota": 18,
+        "Aquificota": 12,
+        "Armatimonadota": 1,
+        "Atribacterota": 3,
+        "Babelota": 2,
+        "Bacillota": 9,
+        "Bacillota_I": 21,
+        "Bacteroidota": 21,
+        "Bdellovibrionota": 22,
+        "Bdellovibrionota_B": 2,
+        "Bipolaricaulota": 1,
+        "Caldisericota": 1,
+        "Calditrichota": 1,
+        "Campylobacterota": 20,
+        "Campylobacterota_A": 1,
+        "Chlamydiota": 23,
+        "Chloroflexota": 16,
+        "Chrysiogenota": 6,
+        "Cloacimonadota": 1,
+        "Deinococcota": 22,
+        "Desulfobacterota": 23,
+        "Dictyoglomota": 2,
+        "Elusimicrobiota": 4,
+        "Fidelibacterota": 1,
+        "Fusobacteriota": 22,
+        "Gemmatimonadota": 9,
+        "Myxococcota": 24,
+        "Myxococcota_A": 22,
+        "Nitrospinota": 1,
+        "Nitrospirota": 12,
+        "Omnitrophota": 1,
+        "Patescibacteriota": 13,
+        "Pseudomonadota": 24,
+        "Spirochaetota": 24,
+        "Synergistota": 6,
+        "Thermodesulfobiota": 2,
+        "Thermosulfidibacterota": 1,
+        "Thermotogota": 21,
+        "Verrucomicrobiota": 22
+      },
+      "protocol_sha256": "8ba73f61cf525a8b5a8880837198da01edee2d8349d30ab9cdfe943d27ada577",
+      "screened": 576,
+      "sites": {
+        "A": {
+          "reference_width": 329,
+          "retained": 304
+        },
+        "B": {
+          "reference_width": 1342,
+          "retained": 966
+        },
+        "C": {
+          "reference_width": 1407,
+          "retained": 1050
+        }
+      }
+    }
+  }
+}

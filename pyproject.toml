@@ -42,7 +42,8 @@ include = ["triplet_coevolution*"]
 "share/triplet-coevolution/docs" = ["docs/*.md"]
 "share/triplet-coevolution/benchmarks" = [
   "benchmarks/*.py", "benchmarks/gatabc_manifest.json", "benchmarks/experimental_*.json",
-  "benchmarks/experimental_structure_metrics.tsv", "benchmarks/independent_cohort_protocol.json", "benchmarks/*.md",
+  "benchmarks/experimental_structure_metrics.tsv", "benchmarks/independent_cohort_*.json",
+  "benchmarks/independent_cohort_*.gz", "benchmarks/*.md",
 ]
 "share/triplet-coevolution/examples/structure" = ["examples/structure/*"]
 "share/triplet-coevolution/examples/mixed" = ["examples/mixed/*"]
