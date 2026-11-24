@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from triplet_coevolution.inference.global_potts import global_triples
-from triplet_coevolution.inference.mi import TripletMI, triplet_mi
+from triplet_coevolution.inference.mi import MIKernel, TripletMI, triplet_mi
 from triplet_coevolution.inference.potts import PAIRS, DCABlock, direct_couplings
 from triplet_coevolution.inference.scores import (
     APCUniverse,
@@ -141,6 +141,7 @@ def write_advanced_results(
     require_reference=False,
     fmt="tsv",
     mi_result=None,
+    mi_kernel: MIKernel | None = None,
     score="mi_apc",
     threebody_model="local",
     global_l2=0.1,
@@ -167,6 +168,12 @@ def write_advanced_results(
         max_pairs is not None and max_pairs < 1
     ):
         raise ValueError("seed/permutations must be nonnegative and output limits positive")
+    if mi_kernel is None:
+        mi_kernel = mi_result.kernel if mi_result is not None else "batched"
+    if mi_kernel not in ("batched", "v1_scalar"):
+        raise ValueError("MI kernel must be batched or v1_scalar")
+    if mi_result is not None and mi_result.kernel != mi_kernel:
+        raise ValueError("supplied MI and null refits must use the same kernel")
     if mi_result is not None and (
         mi_result.min_valid != min_valid or mi_result.n_observations != msa.n_observations
     ):
@@ -225,6 +232,7 @@ def write_advanced_results(
         "require_reference": require_reference,
         "fmt": fmt,
         "mi_statistic": score,
+        "mi_kernel": mi_kernel,
         "dca_statistic": dca_score if dca else None,
         "threebody_statistic": threebody_score if threebody else None,
         "apc_universe": apc_universe,
@@ -241,7 +249,7 @@ def write_advanced_results(
         if permutations or labels or collect:
             if mi is None:
                 mi = triplet_mi(
-                    data, row_weights, min_valid=min_valid,
+                    data, row_weights, min_valid=min_valid, kernel=mi_kernel,
                     include_gaps=mi_result.include_gaps if mi_result is not None else False,
                 )
             mi = mi_with_apc_policy(mi, maps, apc_universe)

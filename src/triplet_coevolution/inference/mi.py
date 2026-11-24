@@ -1,12 +1,15 @@
 # weighted mi and apc for matched msa comps
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
 from triplet_coevolution.core.alignment import ComponentMSA, MatchedTripletMSA
 from triplet_coevolution.core.alphabets import CANONICAL
 from triplet_coevolution.inference.weights import SequenceWeightResult
+
+MIKernel = Literal["batched", "v1_scalar"]
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ class TripletMI:
     include_gaps: bool
     min_valid: int
     apc_universe: str = "retained"
+    kernel: MIKernel = "batched"
 
 
 def _check_min_valid(min_valid: int) -> int:
@@ -181,35 +185,7 @@ def apc(scores: np.ndarray) -> np.ndarray:
     result.setflags(write=False)
     return result
 
-def mutual_information_block(
-    a: ComponentMSA,
-    b: ComponentMSA,
-    weights: SequenceWeightResult | np.ndarray | list[float] | None = None,
-    *,
-    include_gaps: bool = False,
-    min_valid: int = 2,
-) -> MIBlock:
-    """calculate per col mi for two already row matched msas
-    caller must ensure the two msas contain corresp obs in row order
-    gaps excluded, use include_gaps=True to count them
-    all neg/ambig symbols always treated as missing"""
-
-    if not isinstance(a, ComponentMSA) or not isinstance(b, ComponentMSA):
-        raise TypeError("mutual_information_block expects two ComponentMSA objs")
-    if a.n_sequences != b.n_sequences:
-        raise ValueError("both msas must have the same number of matched obs")
-    if not isinstance(include_gaps, (bool, np.bool_)):
-        raise TypeError("include_gaps must be boolean")
-
-    min_valid = _check_min_valid(min_valid)
-    row_weights = _get_weights(weights, a.n_sequences)
-    q_a = len(CANONICAL[a.molecule]) + int(include_gaps)
-    q_b = len(CANONICAL[b.molecule]) + int(include_gaps)
-
-    mi = np.full((a.n_sites, b.n_sites), np.nan, dtype=np.float64)
-    n_valid = np.zeros(mi.shape, dtype=np.int64)
-    valid_weight = np.zeros(mi.shape, dtype=np.float64)
-
+def _batched_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weight):
     # Several column pairs share each bincount call. Each receives a separate
     # range of joint-state bins and one discarded bin for excluded observations.
     n = a.n_sequences
@@ -246,6 +222,50 @@ def mutual_information_block(
             bits = (joint * terms).sum(axis=(1, 2))
             mi[i, cols] = np.where(n_valid[i, cols] >= min_valid, np.maximum(bits, 0.0), np.nan)
 
+
+def mutual_information_block(
+    a: ComponentMSA,
+    b: ComponentMSA,
+    weights: SequenceWeightResult | np.ndarray | list[float] | None = None,
+    *,
+    include_gaps: bool = False,
+    min_valid: int = 2,
+    kernel: MIKernel = "batched",
+) -> MIBlock:
+    """calculate per col mi for two already row matched msas
+    caller must ensure the two msas contain corresp obs in row order
+    gaps excluded, use include_gaps=True to count them
+    all neg/ambig symbols always treated as missing"""
+
+    if not isinstance(a, ComponentMSA) or not isinstance(b, ComponentMSA):
+        raise TypeError("mutual_information_block expects two ComponentMSA objs")
+    if a.n_sequences != b.n_sequences:
+        raise ValueError("both msas must have the same number of matched obs")
+    if not isinstance(include_gaps, (bool, np.bool_)):
+        raise TypeError("include_gaps must be boolean")
+
+    if kernel not in ("batched", "v1_scalar"):
+        raise ValueError("MI kernel must be batched or v1_scalar")
+    min_valid = _check_min_valid(min_valid)
+    row_weights = _get_weights(weights, a.n_sequences)
+    q_a = len(CANONICAL[a.molecule]) + int(include_gaps)
+    q_b = len(CANONICAL[b.molecule]) + int(include_gaps)
+
+    mi = np.full((a.n_sites, b.n_sites), np.nan, dtype=np.float64)
+    n_valid = np.zeros(mi.shape, dtype=np.int64)
+    valid_weight = np.zeros(mi.shape, dtype=np.float64)
+
+    if kernel == "v1_scalar":
+        # v1 sums only occupied states and compacts the positive, valid weights
+        # before reduction. Reordering those sums can change ranks near zero.
+        for i in range(a.n_sites):
+            for j in range(b.n_sites):
+                mi[i, j], n_valid[i, j], valid_weight[i, j] = _site_mi(
+                    a.matrix[:, i], b.matrix[:, j], q_a, q_b, row_weights, min_valid,
+                )
+    else:
+        _batched_mi(a, b, q_a, q_b, row_weights, min_valid, mi, n_valid, valid_weight)
+
     mi_apc = apc(mi)
 
     for array in (mi, n_valid, valid_weight):
@@ -259,12 +279,14 @@ def mutual_information_block(
         valid_weight=valid_weight,
     )
 
+
 def triplet_mi(
     msa: MatchedTripletMSA,
     weights: SequenceWeightResult | np.ndarray | list[float] | None = None,
     *,
     include_gaps: bool = False,
     min_valid: int = 2,
+    kernel: MIKernel = "batched",
 ) -> TripletMI:
     """calculate ab/ac/bc mi on the same synced triplet obs"""
 
@@ -275,13 +297,13 @@ def triplet_mi(
 
     row_weights = _get_weights(weights, msa.n_observations)
     ab = mutual_information_block(
-        msa.a, msa.b, row_weights, include_gaps=include_gaps, min_valid=min_valid
+        msa.a, msa.b, row_weights, include_gaps=include_gaps, min_valid=min_valid, kernel=kernel
     )
     ac = mutual_information_block(
-        msa.a, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid
+        msa.a, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid, kernel=kernel
     )
     bc = mutual_information_block(
-        msa.b, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid
+        msa.b, msa.c, row_weights, include_gaps=include_gaps, min_valid=min_valid, kernel=kernel
     )
 
     return TripletMI(
@@ -292,4 +314,5 @@ def triplet_mi(
         weight_sum=float(row_weights.sum()),
         include_gaps=include_gaps,
         min_valid=min_valid,
+        kernel=kernel,
     )
