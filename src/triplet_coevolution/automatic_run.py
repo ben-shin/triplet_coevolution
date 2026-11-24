@@ -104,8 +104,8 @@ def _score(stage, out, summary, kwargs, settings, plan):
             with redirect_stderr(StringIO()):
                 analysis = _analyze(stage, out, effective)
             break
-        except typer.Exit as exc:
-            cause = exc.__cause__
+        except (typer.Exit, ValueError, TypeError, OSError, ImportError, csv.Error) as exc:
+            cause = exc.__cause__ if isinstance(exc, typer.Exit) else exc
             if isinstance(cause, AnalysisBudgetError):
                 _terminal(summary, "resource_limit", str(cause))
                 return
@@ -167,8 +167,10 @@ def _score(stage, out, summary, kwargs, settings, plan):
                 kwargs.update(revised)
                 settings.pop("site_panel", None)
                 continue
-            elif settings.get("permutations") and isinstance(cause, ValueError) and str(cause).startswith(
-                "the permutation null requires"
+            elif (
+                settings.get("permutations")
+                and isinstance(cause, ValueError)
+                and str(cause).startswith("the permutation null requires")
             ):
                 plan["skipped"]["permutations"] = str(cause)
                 settings.update(permutations=0)
@@ -297,9 +299,9 @@ def finish_run(stage, out, summary, kwargs, overrides, limits, plots):
     write_workflow_report(stage, summary)
 
 
-def run_families(directory, out, online, cache_dir, plots):
-    from triplet_coevolution.cli import _check_output, _stage_run
+def run_families(directory, out, online, cache_dir, plots, *, announce=True):
     from triplet_coevolution.family_workflow import _prepare
+    from triplet_coevolution.publication import _check_output, _stage_run
 
     directory = directory.expanduser().resolve()
     if out is None:
@@ -336,6 +338,7 @@ def run_families(directory, out, online, cache_dir, plots):
         with _stage_run(out) as stage:
             write_workflow_report(stage, summary)
             _write_json(stage / "workflow_summary.json", summary)
-    typer.echo(f"{summary['status']} (exit {summary['exit_code']}): {summary['reason']}")
-    typer.echo(f"Report: {out / 'report.html'}")
+    if announce:
+        typer.echo(f"{summary['status']} (exit {summary['exit_code']}): {summary['reason']}")
+        typer.echo(f"Report: {out / 'report.html'}")
     return summary["exit_code"]

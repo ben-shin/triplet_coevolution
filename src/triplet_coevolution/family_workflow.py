@@ -265,9 +265,14 @@ def _prepare(
     plots=None,
     defer_scoring=False,
 ):
-    from triplet_coevolution.cli import _check_output, _file_stamp, _input_identity, _stage_run
     from triplet_coevolution.evidence import EvidenceRow, generate_evidence
     from triplet_coevolution.io.stockholm import open_stockholm
+    from triplet_coevolution.publication import (
+        _check_output,
+        _file_stamp,
+        _input_identity,
+        _stage_run,
+    )
 
     out = out.expanduser().absolute()
     _check_output(out)

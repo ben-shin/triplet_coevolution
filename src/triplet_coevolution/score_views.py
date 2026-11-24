@@ -21,6 +21,7 @@ from triplet_coevolution.io.score_store import (
     write_score_store,
 )
 from triplet_coevolution.provenance import file_hashes, software_identity
+from triplet_coevolution.report_artifacts import local_artifact
 from triplet_coevolution.reporting.html import (
     STYLE,
     _link,
@@ -48,6 +49,14 @@ def write_json(path: Path, value: dict) -> None:
         stream.write("\n")
 
 
+def _save_labels(directory, labels, benchmark):
+    name = "benchmark_labels.tsv"
+    shutil.copyfile(labels, directory / name)
+    if file_digest(directory / name) != benchmark["label_sha256"]:
+        raise ValueError("label source changed while archiving")
+    return name
+
+
 def save_analysis_store(
     directory: Path,
     summary: dict,
@@ -60,7 +69,7 @@ def save_analysis_store(
     bootstrap: int,
     seed: int,
     top_k: list[int],
-) -> None:
+) -> ScoreStore:
     """Persist observed scores and attach complete benchmark artifacts to a staged native run."""
     selection = summary["ranking"]
     inputs = summary["inputs"]
@@ -101,15 +110,20 @@ def save_analysis_store(
     outputs["score_manifest"] = manifest.relative_to(directory).as_posix()
     outputs["score_payload"] = (manifest.parent / PAYLOAD_NAME).relative_to(directory).as_posix()
     if labels is None:
-        return
+        return store
     benchmark = benchmark_scores(store, labels, top_k=top_k, bootstrap=bootstrap, seed=seed)
     if benchmark["label_sha256"] != inputs["contacts"]["sha256"]:
         raise ValueError("input changed while benchmarking contact labels")
     write_json(directory / "benchmark.json", benchmark)
     outputs["benchmark"] = "benchmark.json"
+    from triplet_coevolution.reporting.explore_data import benchmark_preview
+
+    write_json(directory / "benchmark_display.json", benchmark_preview(benchmark))
+    outputs["benchmark_display"] = "benchmark_display.json"
+    outputs["benchmark_labels"] = _save_labels(directory, labels, benchmark)
     summary["benchmark_overview"] = benchmark_overview(benchmark)
     if selection["legacy"]:
-        return
+        return store
 
     # A compact selected-method view keeps the familiar v1 file available to
     # downstream readers. Every metric comes from the same common-label benchmark.
@@ -141,6 +155,7 @@ def save_analysis_store(
     write_json(directory / "contacts.json", contact_view)
     advanced["settings"]["contacts"] = inputs["contacts"]
     advanced["outputs"]["contacts"] = {"path": "contacts.json", "rows": total}
+    return store
 
 
 def write_ranked_views(
@@ -211,10 +226,40 @@ def render_score_view(
     *,
     plots: bool = False,
     labels: Path | None = None,
-) -> None:
+    palette: str = "accessible",
+    figure_formats: tuple[str, ...] = (),
+    structure: Path | None = None,
+    source_manifest: Path | None = None,
+) -> dict:
     """Create a portable pair-only HTML report from the completed archive."""
-    files = [t.path for t in tables]
+    from dataclasses import asdict
+
+    from triplet_coevolution.report_artifacts import add_structure
+    from triplet_coevolution.reporting.explore import write_explorer
+    from triplet_coevolution.reporting.explore_data import benchmark_preview
+
+    archive = directory / "scores"
+    if source_manifest:
+        archive.mkdir()
+        for name in ("score_manifest.json", PAYLOAD_NAME):
+            shutil.copyfile(source_manifest.parent / name, archive / name)
+        saved = json.loads((archive / "score_manifest.json").read_text(encoding="utf8"))
+        if file_digest(archive / PAYLOAD_NAME) != saved["payload_sha256"]:
+            raise ValueError("score payload changed while rendering")
+    else:
+        write_score_store(archive, store)
+    outputs = {
+        "tables": {t.method + "_" + t.label: asdict(t) for t in tables},
+        "score_manifest": "scores/score_manifest.json",
+        "score_payload": "scores/" + PAYLOAD_NAME,
+    }
+    if structure:
+        outputs["structure"] = add_structure(
+            directory, structure, store, file_digest(archive / "score_manifest.json")
+        )
+    files = [t.path for t in tables] + [outputs["score_manifest"], outputs["score_payload"]]
     network = write_network(directory, tables)
+    outputs["network"] = network
     files.append(network["path"])
     reference_rows = [
         f"<li>{escape(m.component)} · {escape(m.reference_id)} · {m.n_sites:,} retained sites</li>"
@@ -226,7 +271,12 @@ def render_score_view(
 
         mi, dca = store.to_results()
         figures = save_mi_plots(
-            directory / "figures", mi, *store.maps, score=tables[0].score, min_valid=store.min_valid
+            directory / "figures",
+            mi,
+            *store.maps,
+            score=tables[0].score,
+            min_valid=store.min_valid,
+            palette="classic" if store.provenance.get("ranking", {}).get("legacy") else palette,
         )
         if dca:
             figures["dca"] = save_dca_plot(
@@ -247,6 +297,10 @@ def render_score_view(
         result = benchmark_scores(store, labels)
         write_json(directory / "benchmark.json", result)
         files.append("benchmark.json")
+        outputs["benchmark"] = "benchmark.json"
+        outputs["benchmark_display"] = "benchmark_display.json"
+        write_json(directory / outputs["benchmark_display"], benchmark_preview(result))
+        outputs["benchmark_labels"] = _save_labels(directory, labels, result)
         overview = benchmark_overview(result)
     backend = store.provenance.get("methods", {}).get("dca_design", {})
     backend_text = (
@@ -254,19 +308,38 @@ def render_score_view(
         if "dca_apc" in store.scores
         else ""
     )
+    view = {
+        "schema_version": 2,
+        "software_version": store.provenance.get("software_version"),
+        "status": "complete",
+        "outputs": outputs,
+        "report": "report.html",
+        "ranking": store.provenance.get("ranking", {}),
+        "settings": store.provenance.get("settings", {}),
+        "components": store.provenance.get("components", {}),
+        "tables": [asdict(t) for t in tables],
+    }
+    outputs["explorer"] = write_explorer(
+        directory, view, tables, store=store, palette=palette, figure_formats=figure_formats
+    )
+    files.append(outputs["explorer"])
     pages = "".join(f"<li>{_link(path, path)}</li>" for path in files)
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Archived pair scores</title>
 <style>{STYLE}</style></head><body><header><h1>Archived pair scores</h1></header><main>
-<section><h2>Score universe</h2><ul>{"".join(reference_rows)}</ul>
+<nav>{_link(outputs["explorer"], "Explore scores and download figures")}</nav><section><h2>Score universe</h2><ul>{"".join(reference_rows)}</ul>
 <p>Ranked views use the stored coordinates, minimum support of {store.min_valid} observations and {store.min_valid_weight:g} weight, and
 {escape(store.provenance.get("apc_universe", "retained"))} APC axes. Display limits apply separately to each interface. {escape(backend_text)}</p></section>
 <section><h2>Pair rankings</h2>{_rankings(directory, tables)}{"".join(pictures)}</section>
 {benchmark_section(overview)}<section><h2>Files</h2><ul>{pages}</ul></section></main></body></html>"""
     (directory / "report.html").write_text(html, encoding="utf-8")
+    view["artifact_sha256"] = file_hashes(directory)
+    return view
 
 
-def regenerate_report(source: Path, directory: Path) -> None:
+def regenerate_report(
+    source: Path, directory: Path, *, palette="accessible", figure_formats=(), structure=None
+) -> dict:
     """Verify a checksummed analysis inventory and render its report in a fresh directory."""
     summary = json.loads((source / "run_summary.json").read_text(encoding="utf-8"))
     expected = summary.get("artifact_sha256")
@@ -277,11 +350,9 @@ def regenerate_report(source: Path, directory: Path) -> None:
         relative = Path(name)
         if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != name:
             raise ValueError(f"invalid artifact path {name!r}")
-        if name == "report.html":
+        if name in ("report.html", "explore.html") or name.startswith("report_assets/"):
             continue
-        path = (root / relative).resolve(strict=True)
-        if not path.is_relative_to(root):
-            raise ValueError(f"artifact outside source directory: {name!r}")
+        path = local_artifact(root, name)
         target = directory / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
@@ -293,7 +364,24 @@ def regenerate_report(source: Path, directory: Path) -> None:
     paths = [v["path"] for v in output["tables"].values()]
     paths += [v["path"] for v in summary.get("advanced", {}).get("outputs", {}).values()]
     paths += [output["network"]["path"], *output["figures"].values()]
-    paths += [output[k] for k in ("score_manifest", "score_payload", "benchmark") if k in output]
+    paths += [
+        output[k]
+        for k in (
+            "score_manifest",
+            "score_payload",
+            "benchmark",
+            "benchmark_display",
+            "calibration",
+            "calibration_report",
+            "conditional",
+            "conditional_report",
+            "stability",
+            "stability_report",
+            "benchmark_labels",
+            "structure",
+        )
+        if k in output
+    ]
     paths += [output[k] for k in ("weights", "plan", "replay") if k in output]
     paths += list(output.get("diagnostics", {}).values())
     advanced = summary.get("advanced", {})
@@ -303,6 +391,16 @@ def regenerate_report(source: Path, directory: Path) -> None:
         paths.extend([fit["diagnostic_table"], fit["frozen_support"]])
     if any(path not in expected or path == "report.html" for path in paths):
         raise ValueError("report file was not present in the verified native inventory")
-    write_report(directory, summary, ranked_tables(summary))
+    if structure:
+        from triplet_coevolution.report_artifacts import add_structure
+
+        stored = read_scores(directory / output["score_manifest"])
+        output["structure"] = add_structure(
+            directory, structure, stored, file_digest(directory / output["score_manifest"])
+        )
+    write_report(
+        directory, summary, ranked_tables(summary), palette=palette, figure_formats=figure_formats
+    )
     summary["artifact_sha256"] = file_hashes(directory)
     write_json(directory / "run_summary.json", summary)
+    return summary

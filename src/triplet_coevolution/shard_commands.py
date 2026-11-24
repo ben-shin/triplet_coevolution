@@ -160,7 +160,7 @@ def shard_plan(
     inputs: Inputs = None,
 ):
     """Prepare a checksummed final calibration design and balanced logical replicate assignments."""
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     run, out = run.resolve(), out.resolve()
     _separate(out, run)
@@ -249,7 +249,7 @@ def merge_null(
     progress: Annotated[bool, typer.Option("--progress")] = False,
 ):
     """Verify every assigned draw, then publish the complete native calibration, bounds and FDR."""
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     root, spec = load_native_plan(plan)
     _separate(out, root / spec["run"])

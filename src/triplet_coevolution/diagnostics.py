@@ -8,7 +8,7 @@ from importlib import metadata
 from pathlib import Path
 
 from triplet_coevolution.config import COMPONENTS, load_config
-from triplet_coevolution.operations import file_id, read_json
+from triplet_coevolution.operations import file_id
 from triplet_coevolution.provenance import software_identity
 
 MIB = 1024**2
@@ -172,7 +172,9 @@ def doctor_report(scratch, *, required=(), workers=1, blas_threads=1, memory_mib
 
 
 def config_mode(path):
-    raw = read_json(path)
+    from triplet_coevolution.config_layers import load_layers
+
+    raw, _ = load_layers(path)
     comps = raw.get("components", {}) if isinstance(raw, dict) else {}
     return (
         "prepare"

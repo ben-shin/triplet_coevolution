@@ -478,7 +478,7 @@ def calibrate_run(source, out, policy, *, inputs=None, progress=None):
     receives dictionaries of replicate IDs, counts and times. An interrupted job
     retains durable draws in the independently specified checkpoint.
     """
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     source, out = Path(source).resolve(), Path(out).resolve()
     policy = policy if isinstance(policy, NullPolicy) else NullPolicy.from_config(policy)

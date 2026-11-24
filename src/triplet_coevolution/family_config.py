@@ -4,7 +4,8 @@ import csv
 import json
 from pathlib import Path
 
-from triplet_coevolution.config import ANALYSIS_TYPES, COMPONENTS, _keys, _typed, _unique
+from triplet_coevolution.config import COMPONENTS, _keys, _typed, _unique
+from triplet_coevolution.parameters import analysis_types
 
 STOCKHOLM_SUFFIXES = (".sto", ".sth", ".stk", ".stockholm", ".seed", ".full")
 COMPONENT_FIELDS = {
@@ -215,9 +216,9 @@ def family_config(config, directory, *, uniprot=None, default_molecule=None, aut
     _keys(limits, (), ("pair_cells", "weight_cells"), "analysis_limits")
     if any(type(v) is not int or v < 1 for v in limits.values()):
         raise ValueError("analysis_limits entries must be positive integers")
-    _keys(analysis, (), ANALYSIS_TYPES, "analysis")
+    _keys(analysis, (), analysis_types(), "analysis")
     for key, value in analysis.items():
-        analysis[key] = _typed(value, ANALYSIS_TYPES[key], f"analysis.{key}", base)
+        analysis[key] = _typed(value, analysis_types()[key], f"analysis.{key}", base)
         if isinstance(analysis[key], Path):
             inputs[f"analysis.{key}"] = analysis[key]
     return cfg, inputs, order

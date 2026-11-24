@@ -9,15 +9,12 @@ from typing import Annotated
 
 import typer
 
-from triplet_coevolution.io.score_store import file_digest, write_score_store
+from triplet_coevolution.io.score_store import write_score_store
 from triplet_coevolution.score_views import (
     read_scores,
-    regenerate_report,
-    render_score_view,
     write_json,
     write_ranked_views,
 )
-from triplet_coevolution.validation.benchmark import benchmark_scores, write_merged_scores
 
 Scores = Annotated[
     Path, typer.Option("--scores", help="Native analysis, scores directory or score_manifest.json.")
@@ -31,7 +28,7 @@ FromV1 = Annotated[
 
 @contextmanager
 def _output(directory: Path) -> Iterator[Path]:
-    from triplet_coevolution.cli import _check_output, _stage_run
+    from triplet_coevolution.publication import _check_output, _stage_run
 
     try:
         _check_output(directory)
@@ -63,17 +60,23 @@ def benchmark(
     top_k: Annotated[list[int] | None, typer.Option("--top-k", min=1)] = None,
 ) -> None:
     """Evaluate all stored statistics against independently supplied contact labels."""
-    with _output(out) as stage:
-        store = read_scores(scores, from_v1=from_v1)
-        result = benchmark_scores(
-            store, labels, top_k=top_k or [10, 25, 50, 100], bootstrap=bootstrap, seed=seed
+    from triplet_coevolution.api import benchmark as benchmark_archive
+
+    try:
+        result = benchmark_archive(
+            scores,
+            labels,
+            out,
+            from_v1=from_v1,
+            merged=merged,
+            bootstrap=bootstrap,
+            seed=seed,
+            top_k=tuple(top_k or [10, 25, 50, 100]),
         )
-        if merged:
-            write_merged_scores(stage / "merged_scores.tsv", store, labels)
-            if file_digest(labels) != result["label_sha256"]:
-                raise ValueError("label input changed between benchmarking and merged export")
-        write_json(stage / "benchmark.json", result)
-    typer.echo(f"Benchmark: {out / 'benchmark.json'}")
+    except (ValueError, KeyError, OSError, TypeError, ImportError, csv.Error) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Benchmark: {result.manifest}")
 
 
 def export(
@@ -128,27 +131,39 @@ def report(
     dca_score: Annotated[str | None, typer.Option("--dca-score")] = None,
     plots: Annotated[bool, typer.Option("--plots")] = False,
     max_pairs: Annotated[int, typer.Option("--max-pairs", min=1)] = 1000,
+    palette: Annotated[
+        str, typer.Option("--palette", help="accessible or amber-blue")
+    ] = "accessible",
+    figure_format: Annotated[
+        list[str] | None, typer.Option("--figure-format", help="Repeat for svg, pdf or png")
+    ] = None,
+    structure: Annotated[
+        Path | None,
+        typer.Option(
+            "--structure",
+            help="Link a verified native structure-map result on the same references.",
+        ),
+    ] = None,
 ) -> None:
-    """Regenerate a local report from saved scores or a checksummed analysis inventory."""
-    with _output(out) as stage:
-        if (scores is None) == (run is None):
-            raise ValueError("choose one of --run and --scores")
-        if run is not None:
-            if from_v1 or labels or plots or dca_score or mi_score is not None or max_pairs != 1000:
-                raise ValueError("use --scores to change score, plot, label or table settings")
-            regenerate_report(run, stage)
-        else:
-            store = read_scores(scores, from_v1=from_v1)
-            tables = write_ranked_views(
-                stage, store, mi_score=mi_score, dca_score=dca_score, max_pairs=max_pairs
-            )
-            render_score_view(stage, store, tables, plots=plots, labels=labels)
-            write_json(
-                stage / "view_summary.json",
-                {
-                    "schema_version": 1,
-                    "report": "report.html",
-                    "tables": [asdict(table) for table in tables],
-                },
-            )
-    typer.echo(f"Report: {out / 'report.html'}")
+    """Regenerate offline views and structural overlays from completed scientific artifacts."""
+    from triplet_coevolution.api import report as report_archive
+
+    try:
+        result = report_archive(
+            out,
+            run=run,
+            scores=scores,
+            from_v1=from_v1,
+            labels=labels,
+            mi_score=mi_score,
+            dca_score=dca_score,
+            plots=plots,
+            max_pairs=max_pairs,
+            palette=palette,
+            figure_formats=tuple(figure_format or ()),
+            structure=structure,
+        )
+    except (ValueError, KeyError, OSError, TypeError, ImportError, csv.Error) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Report: {result.report}")

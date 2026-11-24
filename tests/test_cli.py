@@ -385,7 +385,7 @@ def test_write_failure_rolls_back_run(inputs, monkeypatch, already_exists):
     dest.write(source.read(20))
     if dest.name.endswith("mi_ac.tsv"):
       raise OSError("simulated disk full")
-  monkeypatch.setattr("triplet_coevolution.cli.shutil.copyfileobj", fail_mid_publish)
+  monkeypatch.setattr("triplet_coevolution.publication.shutil.copyfileobj", fail_mid_publish)
   result = runner.invoke(app, args)
   assert result.exit_code == 1
   assert "simulated disk full" in result.output

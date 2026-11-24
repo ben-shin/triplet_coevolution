@@ -111,8 +111,8 @@ def test_plan_only_matches_run_and_effective_support(tmp_path, monkeypatch):
         def unexpected(*args, **kwargs):
             pytest.fail("plan attempted an estimator or a neighbor calculation")
 
-        scoped.setattr("triplet_coevolution.cli.triplet_mi", unexpected)
-        scoped.setattr("triplet_coevolution.cli.sequence_weights", unexpected)
+        scoped.setattr("triplet_coevolution.analysis_engine.triplet_mi", unexpected)
+        scoped.setattr("triplet_coevolution.analysis_engine.sequence_weights", unexpected)
         invoke("plan", args, tmp_path / "plan")
     p = json.loads((tmp_path / "plan/plan.json").read_text())
     assert p["observations"] == 7 and p["retained_sites"] == {"A": 4, "B": 4, "C": 3}
@@ -207,7 +207,7 @@ def test_memory_guard_precedes_allocations_and_publishes_plan(tmp_path, monkeypa
     def unexpected(*args, **kwargs):
         pytest.fail("attempted scoring after a failed preflight")
 
-    monkeypatch.setattr("triplet_coevolution.cli.sequence_weights", unexpected)
+    monkeypatch.setattr("triplet_coevolution.analysis_engine.sequence_weights", unexpected)
     out = tmp_path / "plan"
     invoke("plan", args, out, 3)
     p = json.loads((out / "plan.json").read_text())

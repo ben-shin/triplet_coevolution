@@ -1,60 +1,18 @@
 """Versioned local-file configuration for prepare and run."""
 
-import json
 import math
 from pathlib import Path
 
+from triplet_coevolution.parameters import analysis_types
+
 COMPONENTS = ("A", "B", "C")
 
-ANALYSIS_TYPES = {
-    "min_coverage": float,
-    "max_gap_fraction": float,
-    "max_missing_fraction": float,
-    "identity_threshold": float,
-    "min_overlap": float,
-    "min_valid": int,
-    "min_valid_weight": float,
-    "weight_policy": str,
-    "weight_component": str,
-    "clade_column": str,
-    "weight_column": str,
-    "memory_mib": float,
-    "qc_policy": Path,
-    "max_pairs": int,
-    "score": str,
-    "dca_score": str,
-    "threebody_score": str,
-    "apc_universe": str,
-    "legacy": bool,
-    "all_pairs": bool,
-    "benchmark_bootstrap": int,
-    "benchmark_k": list,
-    "fmt": str,
-    "require_reference": bool,
-    "plots": bool,
-    "dca": bool,
-    "threebody": bool,
-    "ridge": float,
-    "pseudocount": float,
-    "max_triplets": int,
-    "triplet_candidates": Path,
-    "candidate_policy": Path,
-    "local_policy": Path,
-    "null_policy": Path,
-    "stability_policy": Path,
-    "dca_policy": Path,
-    "conditional_policy": Path,
-    "dca_conditioning": str,
-    "dca_backend": str,
-    "candidate_mode": str,
-    "site_panel": Path,
-    "permutations": int,
-    "seed": int,
-    "strata_column": str,
-    "contacts": Path,
-    "threebody_model": str,
-    "global_l2": float,
-}
+
+def __getattr__(name):
+    # Public inspection compatibility for existing config readers.
+    if name == "ANALYSIS_TYPES":
+        return analysis_types()
+    raise AttributeError(name)
 
 
 def _unique(pairs):
@@ -98,7 +56,9 @@ def load_config(path: Path, mode: str) -> dict:
     from triplet_coevolution.search.discovery_config import SEARCH_KEYS, validate_search_component
 
     base = path.absolute().parent
-    cfg = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_unique)
+    from triplet_coevolution.config_layers import load_layers
+
+    cfg, config_chain = load_layers(path)
     required = {"schema_version", "components", "evidence"}
     _keys(cfg, required, required | {"paralogs"} | ({"analysis"} if mode == "run" else set()), mode)
     if type(cfg["schema_version"]) is not int or cfg["schema_version"] not in (1, 2):
@@ -146,7 +106,9 @@ def load_config(path: Path, mode: str) -> dict:
         comp["discovery_version"] = 1 if legacy else 2
     if mode == "run":
         analysis = cfg.setdefault("analysis", {})
-        _keys(analysis, (), ANALYSIS_TYPES, "analysis")
+        _keys(analysis, (), analysis_types(), "analysis")
         for key, value in analysis.items():
-            analysis[key] = _typed(value, ANALYSIS_TYPES[key], f"analysis.{key}", base)
+            analysis[key] = _typed(value, analysis_types()[key], f"analysis.{key}", base)
+    if len(config_chain) > 1:
+        cfg["config_sources"] = dict(config_chain[1:])
     return cfg

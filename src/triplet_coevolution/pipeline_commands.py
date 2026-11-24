@@ -2,7 +2,6 @@
 
 import csv
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +11,7 @@ import typer
 
 from triplet_coevolution.diagnostics import doctor_report, validate_config, validate_folders
 from triplet_coevolution.local_pipeline import run_pipeline
-from triplet_coevolution.operations import file_id, put_json, read_json
+from triplet_coevolution.operations import put_json, read_json
 
 Output = Annotated[Path | None, typer.Option("--out", help="Optional new/empty result directory.")]
 Config = Annotated[Path | None, typer.Option("--config")]
@@ -31,7 +30,7 @@ Errors = (OSError, ValueError, TypeError, KeyError, csv.Error, subprocess.Subpro
 
 def _result(result, out, name):
     if out:
-        from triplet_coevolution.cli import _stage_run
+        from triplet_coevolution.publication import _stage_run
 
         with _stage_run(out) as tmp:
             put_json(tmp / name, result)
@@ -77,7 +76,7 @@ def validate_inputs(
     """Validate workflow inputs offline, or reproduce the full native plan on prepared inputs."""
     try:
         if out:
-            from triplet_coevolution.cli import _check_output
+            from triplet_coevolution.publication import _check_output
 
             _check_output(out)
         if sum(p is not None for p in (config, directory, prepared)) != 1:
@@ -214,84 +213,23 @@ def select(
     ] = None,
 ) -> None:
     """Recover a fitted candidate manifest or build a new coordinate selection from archived scores."""
-    from triplet_coevolution.cli import _stage_run
-    from triplet_coevolution.inference.candidates import select_candidates, write_candidate_manifest
-    from triplet_coevolution.inference.scores import coordinate_axes
-    from triplet_coevolution.validation.null_archive import RefitData, checked_file
+    from triplet_coevolution.api import select as select_from_run
 
     try:
-        summary = read_json(run / "run_summary.json")
-        hashes = summary["artifact_sha256"]
-        existing = "candidate_manifest.json" in hashes
-        with _stage_run(out) as tmp:
-            if not mode and existing:
-                if (
-                    candidate_file
-                    or training_ids
-                    or file_origin
-                    or prior_source
-                    or statistic != "mi_bits"
-                    or screen_budget != 100000
-                    or maximum != 1000
-                    or seed != 0
-                ):
-                    raise ValueError("choose --mode to request a different screen")
-                manifest = checked_file(run, "candidate_manifest.json", hashes)
-                filename = read_json(manifest)["coordinate_table"]
-                if filename not in hashes or Path(filename).name != filename:
-                    raise ValueError("unverified candidate coordinate table")
-                table = checked_file(run, filename, hashes)
-                if file_id(table)["sha256"] != read_json(manifest)["coordinate_table_sha256"]:
-                    raise ValueError("candidate table checksum differs from manifest")
-                shutil.copyfile(manifest, tmp / manifest.name)
-                shutil.copyfile(table, tmp / filename)
-                action = "recovered_fitted_selection"
-            else:
-                from triplet_coevolution.io.score_store import load_score_store
-
-                data = (
-                    RefitData.load(run) if mode in ("entropy", "hybrid") or training_ids else None
-                )
-                store = (
-                    data.store
-                    if data
-                    else load_score_store(
-                        checked_file(run, summary["outputs"]["score_manifest"], hashes)
-                    )
-                )
-                if statistic not in store.scores:
-                    raise ValueError(f"unavailable stored statistic {statistic}")
-                chosen = select_candidates(
-                    store.maps,
-                    coordinate_axes(store.maps, store.require_reference),
-                    mode=mode or "uniform",
-                    maximum=maximum,
-                    seed=seed,
-                    candidate_file=candidate_file,
-                    prior_source=prior_source,
-                    screen_budget=screen_budget,
-                    msa=data.msa if data else None,
-                    weights=data.weights if data else None,
-                    training_ids=training_ids,
-                    file_origin=file_origin,
-                    pair_scores=store.scores[statistic]
-                    if mode in ("triangle", "wedge", "hybrid") and not training_ids
-                    else None,
-                    pair_statistic=statistic,
-                )
-                write_candidate_manifest(tmp, chosen)
-                action = "new_selection"
-            put_json(
-                tmp / "selection_receipt.json",
-                {
-                    "schema_version": 1,
-                    "status": "complete",
-                    "action": action,
-                    "score_manifest_sha256": hashes[summary["outputs"]["score_manifest"]],
-                    "candidate_manifest_sha256": file_id(tmp / "candidate_manifest.json")["sha256"],
-                },
-            )
-        typer.echo(str(out / "candidate_manifest.json"))
+        result = select_from_run(
+            run,
+            out,
+            mode=mode,
+            maximum=maximum,
+            seed=seed,
+            candidate_file=candidate_file,
+            prior_source=prior_source,
+            statistic=statistic,
+            screen_budget=screen_budget,
+            training_ids=training_ids,
+            file_origin=file_origin,
+        )
+        typer.echo(str(result.manifest))
     except Errors as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc

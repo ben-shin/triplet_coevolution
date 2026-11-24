@@ -180,7 +180,7 @@ def write_conditional(stage, design, *, msa, maps, table, digests):
 
 def conditional_run(run, out, config, *, inputs=None):
     """Fit two matched regularized conditionals per training fold and evaluate their test losses."""
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     design = conditional_design(config)
     source, out = Path(run).resolve(), Path(out).resolve()

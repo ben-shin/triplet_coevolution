@@ -23,8 +23,8 @@ from triplet_coevolution.provenance import package_code_digest, software_identit
 def worker(action, job_file, flag, output):
     """Private child operation. The public input is always a typed folder configuration."""
     from triplet_coevolution.automatic_run import finish_run
-    from triplet_coevolution.cli import _stage_run
     from triplet_coevolution.family_workflow import _prepare
+    from triplet_coevolution.publication import _stage_run
 
     if flag != "--out":
         raise ValueError("missing output directory")

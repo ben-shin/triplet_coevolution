@@ -313,7 +313,7 @@ def _write_stability(dest, source, policy, *, summary=None, inputs=None, live=No
 
 
 def stability_run(source, out, policy, *, inputs=None):
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     source, out = Path(source).resolve(), Path(out).resolve()
     if source.is_relative_to(out) or out.is_relative_to(source):
@@ -323,7 +323,7 @@ def stability_run(source, out, policy, *, inputs=None):
 
 
 def split_matches(matches, out, policy):
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
     from triplet_coevolution.validation.clade_stability import make_split_plan
 
     policy = CladePolicy.from_config(policy)

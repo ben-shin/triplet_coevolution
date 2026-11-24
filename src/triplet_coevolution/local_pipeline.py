@@ -144,7 +144,9 @@ def run_pipeline(
         raise ValueError("unknown stage; choose " + ", ".join(STAGES))
     mode = config_mode(config)
     cfg = load_config(config, mode)
-    raw = read_json(config)
+    from triplet_coevolution.config_layers import load_layers
+
+    raw, _ = load_layers(config)
     settings = dict(cfg.get("analysis", {}))
     original_config_id = file_id(config)
     if config.is_relative_to(root):

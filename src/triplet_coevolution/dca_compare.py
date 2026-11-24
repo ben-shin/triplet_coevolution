@@ -35,7 +35,7 @@ def _correlation(a, b):
 
 
 def compare_dca(run, out, config, *, labels=None, inputs=None):
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     policy, _ = read_policy(config)
     models = policy.pop("models", None)

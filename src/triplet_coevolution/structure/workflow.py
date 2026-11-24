@@ -300,7 +300,7 @@ def _run(stage, config, download):
 
 def run_structure(config: Path | StructureConfig, out: Path, *, download: bool = False) -> dict:
     """Run an atomic structural mapping and distance evaluation on explicit references."""
-    from triplet_coevolution.cli import _stage_run
+    from triplet_coevolution.publication import _stage_run
 
     if not isinstance(config, StructureConfig):
         config = load_structure_config(config)

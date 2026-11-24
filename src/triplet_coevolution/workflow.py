@@ -3,9 +3,8 @@
 import csv
 import hashlib
 import json
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack
 from dataclasses import asdict
-from io import StringIO
 from pathlib import Path
 from typing import Annotated
 
@@ -43,6 +42,7 @@ def _write_fasta(path, msa):
 
 def _inputs(cfg, config):
     paths = {"config": config.absolute(), "evidence": cfg["evidence"]}
+    paths.update({f"config.parent.{i}": p for i, p in enumerate(cfg.get("config_sources", ()), 1)})
     for name, comp in cfg["components"].items():
         for key in (
             "database",
@@ -336,10 +336,9 @@ def _write_analysis_args(prepared, kwargs, filename="analyze_args.json"):
 
 
 def _analyze(stage, out, kwargs):
-    from triplet_coevolution.cli import analyze
+    from triplet_coevolution.analysis_engine import execute
 
-    with redirect_stdout(StringIO()):
-        analyze(**kwargs, out=stage / "analysis")
+    execute(**kwargs, out=stage / "analysis")
     # The outer publication moves generated inputs to their final location.
     path = stage / "analysis" / "run_summary.json"
     summary = json.loads(path.read_text(encoding="utf-8"))
@@ -352,7 +351,7 @@ def _analyze(stage, out, kwargs):
 
 
 def _workflow(config, out, mode, plots=None):
-    from triplet_coevolution.cli import _check_output, _stage_run
+    from triplet_coevolution.publication import _check_output, _stage_run
 
     config = config.expanduser().absolute()
     out = out.expanduser()
@@ -363,6 +362,11 @@ def _workflow(config, out, mode, plots=None):
         cfg["analysis"]["plots"] = plots
     paths = _inputs(cfg, config)
     identities = _provenance(paths)
+    if any(
+        identities[f"config.parent.{i}"]["sha256"] != checksum
+        for i, checksum in enumerate(cfg.get("config_sources", {}).values(), 1)
+    ):
+        raise ValueError("inherited configuration changed while reading")
     if identities["config"] != config_id:
         raise ValueError("configuration changed while reading")
     with _stage_run(out) as stage:
@@ -448,7 +452,13 @@ def _workflow(config, out, mode, plots=None):
         if _provenance(paths) != identities:
             raise ValueError("an input changed during the workflow; rerun with stable files")
         _write_json(stage / "workflow_summary.json", summary)
-    typer.echo(f"Matched {qc['matched_groups']} groups; excluded {qc['excluded_groups']}.")
+    return summary
+
+
+def _announce(out, mode, summary):
+    typer.echo(
+        f"Matched {summary['matched_groups']} groups; excluded {summary['excluded_groups']}."
+    )
     typer.echo(f"Matching QC: {out / summary['matching_qc']}")
     if mode == "run":
         if summary.get("analysis_summary"):
@@ -456,7 +466,7 @@ def _workflow(config, out, mode, plots=None):
         typer.echo(f"Report: {out / summary['report']}")
         if summary["status"] == "no_matches":
             raise typer.Exit(3)
-    elif not qc["ready_for_analysis"]:
+    elif not summary["matched_groups"]:
         typer.echo("No complete triplets. Inspect the matching QC for excluded candidates.")
 
 
@@ -487,7 +497,8 @@ def prepare(
 
             validate_inputs(config=config, out=out)
         else:
-            _workflow(config, out, "discover" if raw else "prepare")
+            mode = "discover" if raw else "prepare"
+            _announce(out, mode, _workflow(config, out, mode))
     except (ValueError, TypeError, OSError, csv.Error) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
@@ -577,7 +588,8 @@ def run(
                 raise ValueError(
                     "--input, --online/--offline and --cache-dir apply to family folders"
                 )
-            _workflow(config, out or Path("results"), "run", plots)
+            target = out or Path("results")
+            _announce(target, "run", _workflow(config, target, "run", plots))
         else:
             from triplet_coevolution.automatic_run import run_families
 

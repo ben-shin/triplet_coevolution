@@ -523,9 +523,9 @@ def estimate_model(
 
 def publish_plan(out, plan, inputs, audit=None):
     """Publish a non-scoring plan on both successful and blocked dry runs."""
-    from triplet_coevolution.cli import _stage_run
     from triplet_coevolution.msa.diagnostics import write_qc
     from triplet_coevolution.provenance import file_hashes, software_identity
+    from triplet_coevolution.publication import _stage_run
     from triplet_coevolution.score_views import write_json
 
     records = {
