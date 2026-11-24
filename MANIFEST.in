@@ -1,7 +1,9 @@
 include setup_local.sh
 include src/_triplet_build.py
-include input/README.md
-recursive-include examples *
+include README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md
+include .github/workflows/ci.yml
+recursive-include requirements *.txt
+recursive-include tools/release *.py
 recursive-include docs *.md
 recursive-include benchmarks *.py
 include benchmarks/gatabc_manifest.json
@@ -10,3 +12,7 @@ include benchmarks/experimental_*.json
 include benchmarks/experimental_structure_metrics.tsv
 include benchmarks/independent_cohort_*.json
 include benchmarks/independent_cohort_*.gz
+prune results
+prune input
+include input/README.md
+global-exclude *.py[cod]

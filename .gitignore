@@ -6,6 +6,9 @@ __pycache__/
 .ruff_cache/
 /build/
 /dist/
+.coverage
+.coverage.*
+.mypy_cache/
 /results/
 /input/*
 !/input/README.md

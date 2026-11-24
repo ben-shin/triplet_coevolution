@@ -66,8 +66,11 @@ def _parse(text):
         if not m.group().isspace() and not (m.group().startswith("[") and m.group().endswith("]"))
     )
     cursor = next(tokens, None)
-    parents, lengths, labels, child_counts = [], [], [], []
-    stack = []
+    parents: list[int] = []
+    lengths: list[float | None] = []
+    labels: list[str] = []
+    child_counts: list[int] = []
+    stack: list[int] = []
 
     def label(token):
         if token is None or token in PUNCTUATION:
@@ -159,7 +162,7 @@ class ValidatedTree:
         ancestors = np.zeros(len(self.parents), dtype=int)
         for level, nodes in enumerate(self.levels[1:], start=1):
             ancestors[nodes] = nodes if level <= depth else ancestors[self.parents[nodes]]
-        groups = {}
+        groups: dict[int, list[str]] = {}
         for key, node in zip(self.observation_ids, ancestors[self.tips], strict=True):
             groups.setdefault(int(node), []).append(key)
         return {key: "clade-" + _hash(sorted(keys)) for keys in groups.values() for key in keys}
@@ -190,8 +193,8 @@ def load_tree(path: str | Path, observation_ids: Sequence[str], *, tip_map=None)
     mapping, source_hash = _tip_map(tip_map, lookup, ids)
     reverse = {key: tip for tip, key in mapping.items()}
     ordered = tuple(reverse[key] for key in ids)
-    levels = []
-    depths = []
+    levels: list[list[int]] = []
+    depths: list[int] = []
     for i, p in enumerate(parent):
         d = 0 if p < 0 else depths[p] + 1
         depths.append(d)
@@ -235,7 +238,9 @@ def _splits(tree):
         p = tree.parents[i]
         signature[p] ^= signature[i]
         size[p] += size[i]
-    rooted, internal, edges = set(), set(), {}
+    rooted: set[tuple[int, int]] = set()
+    internal: set[tuple[int, int]] = set()
+    edges: dict[tuple[int, int], float] = {}
     for i in range(1, len(signature)):
         if size[i] == n:
             continue

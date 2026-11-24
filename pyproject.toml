@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26,<3",
-  "biopython>=1.86,<2",
+  "biopython>=1.87,<2",
   "typer>=0.26,<1",
 ]
 
@@ -36,8 +36,11 @@ sdist = "_triplet_build.SourceDist"
 where = ["src"]
 include = ["triplet_coevolution*"]
 
+[tool.setuptools.package-data]
+"triplet_coevolution.reporting" = ["explorer.js", "explorer.css"]
+
 [tool.setuptools.data-files]
-"share/triplet-coevolution" = ["README.md"]
+"share/triplet-coevolution" = ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md"]
 "share/triplet-coevolution/input" = ["input/README.md"]
 "share/triplet-coevolution/docs" = ["docs/*.md"]
 "share/triplet-coevolution/benchmarks" = [
@@ -45,17 +48,51 @@ include = ["triplet_coevolution*"]
   "benchmarks/experimental_structure_metrics.tsv", "benchmarks/independent_cohort_*.json",
   "benchmarks/independent_cohort_*.gz", "benchmarks/*.md",
 ]
-"share/triplet-coevolution/examples/structure" = ["examples/structure/*"]
-"share/triplet-coevolution/examples/hpc" = ["examples/hpc/*.sh"]
-"share/triplet-coevolution/examples/mixed" = ["examples/mixed/*"]
-"share/triplet-coevolution/examples/workflow" = ["examples/workflow/*"]
-"share/triplet-coevolution/examples/families" = ["examples/families/*.tsv", "examples/families/*.json"]
-"share/triplet-coevolution/examples/families/ATPase" = ["examples/families/ATPase/*"]
-"share/triplet-coevolution/examples/families/Partner" = ["examples/families/Partner/*"]
-"share/triplet-coevolution/examples/families/guide_RNA" = ["examples/families/guide_RNA/*"]
+"share/triplet-coevolution/examples/structure" = [
+  "examples/structure/config.json", "examples/structure/references.fasta",
+  "examples/structure/candidates.tsv", "examples/structure/mixed.cif",
+]
+"share/triplet-coevolution/examples/hpc" = ["examples/hpc/null-array.sh"]
+"share/triplet-coevolution/examples/mixed" = [
+  "examples/mixed/protein.fasta", "examples/mixed/dna.fasta", "examples/mixed/rna.fasta",
+  "examples/mixed/matches.tsv", "examples/mixed/clade-study.json", "examples/mixed/conditional.json",
+  "examples/mixed/dca-grid.json", "examples/mixed/local-model.json", "examples/mixed/null-policy.json",
+  "examples/mixed/observations.nwk", "examples/mixed/tree-null.json",
+]
+"share/triplet-coevolution/examples/workflow" = [
+  "examples/workflow/A_database.fasta", "examples/workflow/B_database.fasta", "examples/workflow/C_database.fasta",
+  "examples/workflow/A_ref.fasta", "examples/workflow/B_ref.fasta", "examples/workflow/C_ref.fasta",
+  "examples/workflow/evidence.tsv", "examples/workflow/prepare.json", "examples/workflow/run.json",
+  "examples/workflow/synthetic_labels.tsv",
+]
+"share/triplet-coevolution/examples/families" = ["examples/families/project.json", "examples/families/mappings.tsv"]
+"share/triplet-coevolution/examples/families/ATPase" = ["examples/families/ATPase/component.json", "examples/families/ATPase/family.sto", "examples/families/ATPase/targets.txt"]
+"share/triplet-coevolution/examples/families/Partner" = ["examples/families/Partner/component.json", "examples/families/Partner/family.sto"]
+"share/triplet-coevolution/examples/families/guide_RNA" = ["examples/families/guide_RNA/component.json", "examples/families/guide_RNA/family.sto"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+  "src/triplet_coevolution/core/alignment.py", "src/triplet_coevolution/core/coordinates.py",
+  "src/triplet_coevolution/structure/types.py", "src/triplet_coevolution/validation/fdr.py",
+  "src/triplet_coevolution/validation/tree_topology.py",
+]
+check_untyped_defs = true
+follow_imports = "silent"
+warn_unused_ignores = true
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["triplet_coevolution.core", "triplet_coevolution.validation"]
+patch = ["subprocess"]
+concurrency = ["thread", "multiprocessing"]
+parallel = true
+
+[tool.coverage.report]
+precision = 2

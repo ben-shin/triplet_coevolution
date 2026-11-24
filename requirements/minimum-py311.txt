@@ -1,0 +1,6 @@
+# Lower-bound lane on CPython 3.11. SciPy 1.11.0 was withdrawn from PyPI.
+numpy==1.26.0
+biopython==1.87
+typer==0.26.0
+scipy==1.11.1
+matplotlib==3.8.0

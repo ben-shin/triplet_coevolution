@@ -1,0 +1,10 @@
+# Direct quality and build tool pins. The package's runtime requirements live in pyproject.toml.
+build==1.6.1
+coverage==7.17.5
+mypy==2.4.1
+packaging==26.4
+pip-audit==2.10.1
+pytest==9.2.0
+ruff==0.17.6
+setuptools==84.2.1
+wheel==0.48.0

@@ -41,7 +41,7 @@ def reference_positions(
   ):
     raise ValueError("reference sequence has invalid symbols")
 
-  positions = []
+  positions: list[int | None] = []
   next_position = start
 
   for symbol in gapped_reference:
@@ -183,7 +183,7 @@ def build_reference_map(
 
   if not isinstance(msa, ComponentMSA):
     raise TypeError("build_reference_map expects a ComponentMSA")
-  if strand == "-" and msa.molecule.value == "protein":
+  if strand == "-" and msa.molecule == "protein":
     raise ValueError("reverse reference numbering requires a nucleotide component")
 
   coordinate_id = reference_id if row_id is None else row_id
