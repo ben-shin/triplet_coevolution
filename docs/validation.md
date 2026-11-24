@@ -247,3 +247,28 @@ The accepted Phase 10 source was `04c7d83`, with its verification recorded at `9
 | `experimental_fluorescence_results.json` | `671d04f541b091240fa8df95f23c30c37b190d184dbf6a2d702caed4f0f72d81` | Both original 8,192-row trial tables were tested against independent normal-equation and Walsh calculations. The repeated experimental run reproduced the aggregate. |
 
 The final release checks verify that the packaged policy, compact outcomes, scripts, reports and five examples are installed. The biological replay commands, dependencies and all positive, negative and missing outcomes appear with their studies. The local distribution receipt records the exact built wheel and source archive hashes. [Experimental contact replay](independent-contact-results.md) · [Nested model replay](independent-heldout.md) · [Assay replay](fluorescence-benchmark.md) · [Implementation report](implementation-report.md)
+
+## Integrated follow-up to the experimental release
+
+Initial outcome revision `cd74d06` passed the full installed suite on Linux/WSL (1,162 passed, one historical-data skip), Windows Python 3.13 (1,145 passed, 18 skips), and Windows Python 3.11/3.15 (1,150 passed, 13 skips at each endpoint). Both the original code and compact experimental results remain available at that revision. The subsequent policies were committed separately at `a4ae12d` after the earlier biological findings were known and before the follow-up fits. All four original scientific outcome artifacts retain their original bytes.
+
+| Gate | Revised implementation | Measured check |
+| --- | --- | --- |
+| Cached report identity | `7da490c` includes the two installed explorer assets in the relevant stage identities. | In disposable wheel installations, both the three-folder and configured local CLI reused all stages on identical inputs. Editing only JavaScript, then only CSS relative to the pristine install, regenerated HTML containing that edit for each CLI. The prior HTML and eligible input preparation remained intact. Both end-to-end cases passed in 21.94 s. [Workflow check](../tests/test_render_cache.py) |
+| Experimental PLM and triple geometry | `e2b257a` contains the registered bounded-panel fits, geometry-blind matching, independent atom and ranking checks. | 128 fits, 384 norm checks, 18 APC blocks and 306 sampled observed/unknown atom-distance checks. The installed numerical package regenerated the same compressed archive SHA-256 `755133ddc4c21f7c57e61152c214729aad89a03af291bfbcda835bb4f5a93062`. Fully observed triples with two 8 Å contacts numbered zero. [Metrics and denominators](plm-geometry-followup.md) |
+| Detection and contamination | `e2b257a` contains independent generation, selection/tuning/test and exact conditional tests. | All 4,096 repetitions across all 64 registered cells are recorded. Independent serial, six-worker and integration-wheel replays reproduced LF SHA-256 `d40bc8ac3ad4159edadcbbb2f6f3b298b0a9099405d7df3ff5f2403d98aef09e`. Expected false discovery proportions and power are specific to the declared law and design. [Cell-level intervals](recovery-matrix.md) |
+| Global pair-only Gibbs control | `ce95563` supplies the optional shared-pair sampler, conditioning/mask restoration and paired conditional refits. | Small exact conditional probabilities agreed within 1.12 × 10⁻¹⁶, analytic 18-site moments were within the simultaneous 0.02107 bound, and the trapped triangle abstained. The installed bundled Gibbs example reported 19 valid draws in each of two folds. The nine-site control returned a gain tail of 0.85 and local I3 tail of 0.30 with 19 draws. [Sampling budgets, approximate law and intervals](gibbs-bootstrap.md) |
+
+The integrated candidate at `ade270f` built from Git, installed and passed **1,171 tests with 18 explicit skips in 142.32 s** on Windows/Python 3.13.15. The skipped tests required optional SciPy, external search executables, or the absent original six full legacy score tables. The final verification scripts additionally install the specified wheel in disposable locations for the asset-mutation test and execute the shipped Gibbs example from both fresh base-only wheel and source installations. The ignored local distribution directory contains the final revision, artifact SHA-256 values, platform counts, skip reasons and template results. This keeps build-specific digests outside the archives they identify.
+
+To replay the release checks, export the chosen revision with `git archive`, install the development tool dependencies from `requirements/release.txt`, then build and test from the export. Set `TRIPLET_RENDER_TEST_WHEEL` to the absolute path of the newly built wheel to test actual private install targets. Optional original-data tests accept the paths documented above. Run the numerical replay commands from a checkout with the registered public inputs present. The base-only distribution check accepts a previously populated wheelhouse via `--wheelhouse PATH --offline`.
+
+```shell
+python -m build --outdir dist
+python tools/release/check_distributions.py --dist dist --wheelhouse wheelhouse --offline
+python -m pytest -q -rs -p no:cacheprovider
+python -m pytest -q tests/test_render_cache.py tests/test_gibbs_bootstrap.py tests/test_followup_geometry.py tests/test_recovery_matrix.py
+python benchmarks/gibbs_bootstrap.py
+python benchmarks/recovery_matrix.py --jobs 6 --out results/recovery-matrix-replay.json
+python benchmarks/followup_verify.py results/verified-followup.json.gz
+```

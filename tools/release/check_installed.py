@@ -107,6 +107,14 @@ def main():
     src = Path("mixed")
     info = json.loads((src / "run_summary.json").read_text(encoding="utf8"))
     assert info["matched_observations"] == 8
+    run("conditional", "--run", src, "--config", mixed / "conditional-gibbs.json", "--out", "gibbs")
+    (nested_path,) = Path("gibbs").glob("fit_*/nested_summary.json")
+    folds = json.loads(nested_path.read_text(encoding="utf8"))["folds"]
+    assert len(folds) == 2
+    assert all(
+        f["parametric_null"]["status"] == "available" and f["parametric_null"]["valid_draws"] == 19
+        for f in folds
+    )
     payload = src / info["outputs"]["score_payload"]
     before = hashlib.sha256(payload.read_bytes()).hexdigest()
     run("report", "--run", src, "--out", "regenerated")
@@ -124,6 +132,7 @@ def main():
                 "version": version,
                 "mixed_observations": 8,
                 "workflow_observations": 8,
+                "gibbs_valid_draws_per_fold": [f["parametric_null"]["valid_draws"] for f in folds],
                 "score_payload_sha256": before,
                 "offline_report": info["report"],
             },

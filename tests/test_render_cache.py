@@ -16,23 +16,41 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 @pytest.mark.parametrize("mode", ["pipeline", "folder"])
 def test_installed_renderer_cache(tmp_path, mode):
-    # Copy the imported package so the test can run against a wheel or a source tree
-    # without editing another process's installation.
+    # Never modify the developer's or another test's active installation.
     target = tmp_path / "lib" / "triplet_coevolution"
-    shutil.copytree(
-        Path(triplet_coevolution.__file__).parent,
-        target,
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
+    wheel = os.environ.get("TRIPLET_RENDER_TEST_WHEEL")
+    if wheel:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--no-deps",
+                "--target",
+                str(target.parent),
+                wheel,
+            ],
+            check=True,
+        )
+        examples = target.parent / "share/triplet-coevolution/examples"
+    else:
+        shutil.copytree(
+            Path(triplet_coevolution.__file__).parent,
+            target,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        examples = EXAMPLES
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(target.parent), env.get("PYTHONPATH"))))
     work = tmp_path / "w"
     if mode == "pipeline":
-        args = ["pipeline", "--config", EXAMPLES / "workflow/prepare.json"]
+        args = ["pipeline", "--config", examples / "workflow/prepare.json"]
         report_stage = "report"
         upstream = {"prepare", "plan"}
     else:
-        args = ["run", "--offline", "--input", EXAMPLES / "families"]
+        args = ["run", "--offline", "--input", examples / "families"]
         report_stage = "family_score"
         upstream = {"family_prepare"}
 
